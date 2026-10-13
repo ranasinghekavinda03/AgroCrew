@@ -1,3 +1,4 @@
+alembic
 fastapi
 psycopg[binary]
 pydantic-settings
