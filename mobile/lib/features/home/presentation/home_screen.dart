@@ -1,7 +1,60 @@
 import 'package:flutter/material.dart';
 
-class HomeScreen extends StatelessWidget {
-  const HomeScreen({super.key});
+import '../../../core/network/api_client.dart';
+import '../data/health_service.dart';
+
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key, this.healthService});
+
+  final HealthService? healthService;
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  late final HealthService _healthService;
+  late final bool _ownsHealthService;
+  HealthStatus? _healthStatus;
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _ownsHealthService = widget.healthService == null;
+    _healthService = widget.healthService ?? HealthService(ApiClient());
+    _checkConnection();
+  }
+
+  Future<void> _checkConnection() async {
+    setState(() {
+      _isLoading = true;
+      _healthStatus = null;
+    });
+
+    try {
+      final healthStatus = await _healthService.checkHealth();
+      if (!mounted) return;
+      setState(() {
+        _healthStatus = healthStatus;
+        _isLoading = false;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _healthStatus = null;
+        _isLoading = false;
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    if (_ownsHealthService) {
+      _healthService.close();
+    }
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -51,49 +104,15 @@ class HomeScreen extends StatelessWidget {
                           ),
                         ),
                         const SizedBox(height: 36),
-                        Card(
-                          child: Padding(
-                            padding: const EdgeInsets.all(24),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Container(
-                                  width: 44,
-                                  height: 44,
-                                  decoration: BoxDecoration(
-                                    color: colors.primaryContainer,
-                                    borderRadius: BorderRadius.circular(14),
-                                  ),
-                                  child: Icon(
-                                    Icons.check_rounded,
-                                    color: colors.onPrimaryContainer,
-                                  ),
-                                ),
-                                const SizedBox(width: 16),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        'Flutter application initialized successfully.',
-                                        style: theme.textTheme.headlineSmall,
-                                      ),
-                                      const SizedBox(height: 8),
-                                      Text(
-                                        'The mobile foundation is ready for future '
-                                        'AgroCrew features.',
-                                        style: theme.textTheme.bodyMedium
-                                            ?.copyWith(
-                                              color: colors.onSurfaceVariant,
-                                            ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
+                        Text(
+                          'Backend Connection',
+                          style: theme.textTheme.headlineSmall,
+                        ),
+                        const SizedBox(height: 14),
+                        _BackendConnectionCard(
+                          isLoading: _isLoading,
+                          healthStatus: _healthStatus,
+                          onRetry: _checkConnection,
                         ),
                       ],
                     ),
@@ -102,6 +121,95 @@ class HomeScreen extends StatelessWidget {
               ),
             );
           },
+        ),
+      ),
+    );
+  }
+}
+
+class _BackendConnectionCard extends StatelessWidget {
+  const _BackendConnectionCard({
+    required this.isLoading,
+    required this.healthStatus,
+    required this.onRetry,
+  });
+
+  final bool isLoading;
+  final HealthStatus? healthStatus;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    final isConnected = healthStatus != null;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: isLoading
+                    ? colors.surfaceContainerHighest
+                    : isConnected
+                    ? colors.primaryContainer
+                    : colors.errorContainer,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              alignment: Alignment.center,
+              child: isLoading
+                  ? const SizedBox.square(
+                      dimension: 22,
+                      child: CircularProgressIndicator(strokeWidth: 2.5),
+                    )
+                  : Icon(
+                      isConnected ? Icons.check_rounded : Icons.cloud_off,
+                      color: isConnected
+                          ? colors.onPrimaryContainer
+                          : colors.onErrorContainer,
+                    ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    isLoading
+                        ? 'Checking connection...'
+                        : isConnected
+                        ? 'Backend Connected'
+                        : 'Backend Unavailable',
+                    style: theme.textTheme.headlineSmall,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    isLoading
+                        ? 'Contacting the AgroCrew backend.'
+                        : isConnected
+                        ? 'Service: ${healthStatus!.service}'
+                        : 'Unable to connect to the AgroCrew backend.',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+                  if (!isLoading) ...[
+                    const SizedBox(height: 16),
+                    FilledButton.icon(
+                      onPressed: onRetry,
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Retry Connection'),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
