@@ -1,6 +1,10 @@
 alembic
+email-validator
 fastapi[standard]
+httpx
 psycopg[binary]
 pydantic-settings
+pwdlib[argon2]
+pytest
 sqlalchemy
 uvicorn[standard]
