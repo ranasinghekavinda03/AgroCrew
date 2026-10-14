@@ -1,5 +1,5 @@
 alembic
-fastapi
+fastapi[standard]
 psycopg[binary]
 pydantic-settings
 sqlalchemy
