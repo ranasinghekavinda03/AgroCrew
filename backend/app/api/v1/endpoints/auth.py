@@ -4,7 +4,13 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_current_user
 from app.db.models.user import User
 from app.db.session import get_db
-from app.schemas.auth import LoginRequest, LoginResponse, UserCreate, UserResponse
+from app.schemas.auth import (
+    LoginRequest,
+    LoginResponse,
+    RefreshRequest,
+    UserCreate,
+    UserResponse,
+)
 from app.services.auth_service import (
     AuthenticationServiceError,
     DuplicateEmailError,
@@ -12,6 +18,11 @@ from app.services.auth_service import (
     RegistrationError,
     authenticate_user,
     register_user,
+)
+from app.services.refresh_token_service import (
+    InvalidRefreshTokenError,
+    RefreshTokenServiceError,
+    rotate_refresh_token,
 )
 
 
@@ -54,6 +65,26 @@ def login(credentials: LoginRequest, db: Session = Depends(get_db)) -> LoginResp
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unable to authenticate at this time.",
+        ) from None
+
+
+@router.post("/refresh", response_model=LoginResponse)
+def refresh_tokens(
+    request: RefreshRequest,
+    db: Session = Depends(get_db),
+) -> LoginResponse:
+    try:
+        return rotate_refresh_token(db, request.refresh_token)
+    except InvalidRefreshTokenError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from None
+    except RefreshTokenServiceError:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to refresh authentication at this time.",
         ) from None
 
 
