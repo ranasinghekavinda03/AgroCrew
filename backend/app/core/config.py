@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     jwt_secret_key: SecretStr
     jwt_algorithm: Literal["HS256"] = "HS256"
     access_token_expire_minutes: int = Field(default=30, gt=0, le=1440)
+    refresh_token_expire_days: int = Field(default=7, gt=0, le=365)
     cors_allowed_origins: list[str] = [
         "http://localhost:58581",
         "http://127.0.0.1:58581",
