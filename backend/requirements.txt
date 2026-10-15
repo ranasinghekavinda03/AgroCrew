@@ -3,6 +3,7 @@ email-validator
 fastapi[standard]
 httpx
 psycopg[binary]
+PyJWT
 pydantic-settings
 pwdlib[argon2]
 pytest
