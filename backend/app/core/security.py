@@ -25,6 +25,7 @@ def create_access_token(
     subject: int | str,
     *,
     now: datetime | None = None,
+    token_id: str | None = None,
 ) -> str:
     issued_at = now or datetime.now(timezone.utc)
     if issued_at.tzinfo is None:
@@ -36,6 +37,8 @@ def create_access_token(
         "exp": expires_at,
         "token_type": ACCESS_TOKEN_TYPE,
     }
+    if token_id is not None:
+        claims["jti"] = token_id
     return jwt.encode(
         claims,
         settings.jwt_secret_key.get_secret_value(),

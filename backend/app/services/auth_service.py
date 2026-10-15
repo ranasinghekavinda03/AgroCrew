@@ -2,10 +2,10 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
-from app.core.security import create_access_token, hash_password, verify_password
+from app.core.security import hash_password, verify_password
 from app.db.models.user import User
 from app.schemas.auth import LoginRequest, LoginResponse, UserCreate
+from app.services.refresh_token_service import issue_token_pair
 
 
 DUMMY_PASSWORD_HASH = (
@@ -71,10 +71,7 @@ def authenticate_user(db: Session, credentials: LoginRequest) -> LoginResponse:
         if user is None or not password_is_valid or not user.is_active:
             raise InvalidCredentialsError
 
-        return LoginResponse(
-            access_token=create_access_token(user.id),
-            expires_in=settings.access_token_expire_minutes * 60,
-        )
+        return issue_token_pair(db, user.id)
     except InvalidCredentialsError:
         raise
     except SQLAlchemyError:

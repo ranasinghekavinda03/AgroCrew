@@ -57,5 +57,18 @@ class LoginRequest(BaseModel):
 
 class LoginResponse(BaseModel):
     access_token: str
+    refresh_token: str
     token_type: Literal["bearer"] = "bearer"
     expires_in: int = Field(gt=0)
+    refresh_expires_in: int = Field(gt=0)
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(min_length=1, max_length=512)
+
+    @field_validator("refresh_token")
+    @classmethod
+    def require_non_empty_refresh_token(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Refresh token must not be empty.")
+        return value
