@@ -44,9 +44,17 @@ def test_login_returns_a_valid_signed_access_token(client: TestClient) -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body) == {"access_token", "token_type", "expires_in"}
+    assert set(body) == {
+        "access_token",
+        "refresh_token",
+        "token_type",
+        "expires_in",
+        "refresh_expires_in",
+    }
     assert body["token_type"] == "bearer"
     assert body["expires_in"] == 1800
+    assert body["refresh_expires_in"] == 604800
+    assert body["refresh_token"]
     assert "password" not in body
     assert "password_hash" not in body
 

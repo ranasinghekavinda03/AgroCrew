@@ -4,6 +4,7 @@ import os
 os.environ["JWT_SECRET_KEY"] = "tests-only-jwt-secret-that-is-at-least-32-bytes-long"
 os.environ["JWT_ALGORITHM"] = "HS256"
 os.environ["ACCESS_TOKEN_EXPIRE_MINUTES"] = "30"
+os.environ["REFRESH_TOKEN_EXPIRE_DAYS"] = "7"
 
 import pytest
 from fastapi.testclient import TestClient
