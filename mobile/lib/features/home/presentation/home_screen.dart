@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/network/api_client.dart';
+import '../../auth/data/auth_service.dart';
+import '../../auth/presentation/register_screen.dart';
 import '../data/health_service.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key, this.healthService});
+  const HomeScreen({super.key, this.healthService, this.authService});
 
   final HealthService? healthService;
+  final AuthService? authService;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -113,6 +116,24 @@ class _HomeScreenState extends State<HomeScreen> {
                           isLoading: _isLoading,
                           healthStatus: _healthStatus,
                           onRetry: _checkConnection,
+                        ),
+                        const SizedBox(height: 28),
+                        SizedBox(
+                          width: double.infinity,
+                          child: FilledButton.icon(
+                            key: const Key('home-create-account'),
+                            onPressed: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute<void>(
+                                  builder: (_) => RegisterScreen(
+                                    authService: widget.authService,
+                                  ),
+                                ),
+                              );
+                            },
+                            icon: const Icon(Icons.person_add_alt_1_rounded),
+                            label: const Text('Create Account'),
+                          ),
                         ),
                       ],
                     ),
