@@ -72,3 +72,14 @@ class RefreshRequest(BaseModel):
         if not value.strip():
             raise ValueError("Refresh token must not be empty.")
         return value
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: str = Field(min_length=1, max_length=512)
+
+    @field_validator("refresh_token")
+    @classmethod
+    def require_non_empty_refresh_token(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Refresh token must not be empty.")
+        return value

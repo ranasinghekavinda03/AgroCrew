@@ -82,6 +82,36 @@ def rotate_refresh_token(db: Session, raw_token: str) -> LoginResponse:
         raise RefreshTokenServiceError from None
 
 
+def revoke_refresh_token(db: Session, raw_token: str) -> None:
+    """Idempotently revoke one active refresh token.
+
+    The row lock serializes logout with another logout or refresh. If logout wins,
+    refresh observes the revocation and fails. If rotation wins, it consumes this
+    token first; logout then becomes a no-op and does not revoke the successor.
+    """
+    now = datetime.now(timezone.utc)
+    supplied_hash = hash_refresh_token(raw_token)
+    try:
+        stored_token = db.scalar(
+            select(RefreshToken)
+            .where(
+                RefreshToken.token_hash == supplied_hash,
+                RefreshToken.revoked_at.is_(None),
+                RefreshToken.expires_at > now,
+            )
+            .with_for_update()
+        )
+        if stored_token is not None:
+            stored_token.revoked_at = now
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        raise RefreshTokenServiceError from None
+    except Exception:
+        db.rollback()
+        raise RefreshTokenServiceError from None
+
+
 def _new_refresh_token(
     user_id: int,
     now: datetime,
