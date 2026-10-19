@@ -25,6 +25,7 @@ void main() {
     expect(find.text('Backend Connected'), findsOneWidget);
     expect(find.text('Service: agrocrew-api'), findsOneWidget);
     expect(find.byIcon(Icons.eco_outlined), findsOneWidget);
+    expect(find.text('Create Account'), findsOneWidget);
   });
 
   testWidgets('shows unavailable state and retries the connection', (
@@ -77,6 +78,31 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Backend Connected'), findsOneWidget);
+  });
+
+  testWidgets('opens registration from home and supports back navigation', (
+    tester,
+  ) async {
+    final service = _serviceWith((_) async {
+      return http.Response('{"status":"ok","service":"agrocrew-api"}', 200);
+    });
+
+    await tester.pumpWidget(AgroCrewApp(healthService: service));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const Key('home-create-account')));
+    await tester.tap(find.byKey(const Key('home-create-account')));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('Start your smart farming journey with AgroCrew.'),
+      findsOneWidget,
+    );
+
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+
+    expect(find.text('Backend Connected'), findsOneWidget);
+    expect(find.text('Create Account'), findsOneWidget);
   });
 }
 
