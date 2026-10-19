@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user
@@ -7,6 +7,7 @@ from app.db.session import get_db
 from app.schemas.auth import (
     LoginRequest,
     LoginResponse,
+    LogoutRequest,
     RefreshRequest,
     UserCreate,
     UserResponse,
@@ -22,6 +23,7 @@ from app.services.auth_service import (
 from app.services.refresh_token_service import (
     InvalidRefreshTokenError,
     RefreshTokenServiceError,
+    revoke_refresh_token,
     rotate_refresh_token,
 )
 
@@ -86,6 +88,30 @@ def refresh_tokens(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unable to refresh authentication at this time.",
         ) from None
+
+
+@router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    responses={204: {"description": "Refresh token revoked or already inactive."}},
+    summary="Log out the supplied refresh-token session",
+    description=(
+        "Revokes the supplied refresh token without requiring an access token. "
+        "The operation is idempotent. Existing stateless access JWTs remain valid "
+        "until their expiration."
+    ),
+)
+def logout(request: LogoutRequest, db: Session = Depends(get_db)) -> Response:
+    try:
+        revoke_refresh_token(db, request.refresh_token)
+    except RefreshTokenServiceError:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to log out at this time.",
+        ) from None
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/me", response_model=UserResponse)
