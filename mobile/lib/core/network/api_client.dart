@@ -11,10 +11,21 @@ class ApiClient {
   final Duration timeout;
 
   Future<Map<String, dynamic>> getJson(Uri uri) async {
-    try {
-      final response = await _client.get(uri).timeout(timeout);
+    final response = await getJsonResponse(uri, requireSuccess: true);
+    return response.body;
+  }
 
-      if (response.statusCode != 200) {
+  Future<ApiResponse> getJsonResponse(
+    Uri uri, {
+    Map<String, String>? headers,
+    bool requireSuccess = false,
+  }) async {
+    try {
+      final response = await _client
+          .get(uri, headers: headers)
+          .timeout(timeout);
+
+      if (requireSuccess && response.statusCode != 200) {
         throw ApiException(
           'The backend returned HTTP ${response.statusCode}.',
           kind: ApiErrorKind.http,
@@ -39,7 +50,7 @@ class ApiClient {
         );
       }
 
-      return decoded;
+      return ApiResponse(statusCode: response.statusCode, body: decoded);
     } on TimeoutException catch (error) {
       throw ApiException(
         'The backend request timed out.',
