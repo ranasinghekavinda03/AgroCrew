@@ -104,6 +104,25 @@ void main() {
     expect(find.text('Backend Connected'), findsOneWidget);
     expect(find.text('Create Account'), findsOneWidget);
   });
+
+  testWidgets('opens login from home and supports back navigation', (
+    tester,
+  ) async {
+    final service = _serviceWith((_) async {
+      return http.Response('{"status":"ok","service":"agrocrew-api"}', 200);
+    });
+
+    await tester.pumpWidget(AgroCrewApp(healthService: service));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const Key('home-login')));
+    await tester.tap(find.byKey(const Key('home-login')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Welcome Back'), findsOneWidget);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    expect(find.text('Backend Connected'), findsOneWidget);
+  });
 }
 
 HealthService _serviceWith(MockClientHandler handler) {

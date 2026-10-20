@@ -125,11 +125,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      find.text(
-        'Account created successfully. You can log in when the login feature is available.',
-      ),
+      find.text('Account created successfully. You can now log in.'),
       findsOneWidget,
     );
+    expect(find.byKey(const Key('registration-login')), findsOneWidget);
     expect(requestBody.keys, containsAll(['name', 'email', 'password']));
     expect(requestBody['name'], 'Test Farmer');
     expect(requestBody['email'], 'farmer@example.com');
