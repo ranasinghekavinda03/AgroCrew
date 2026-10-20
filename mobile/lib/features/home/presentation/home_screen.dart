@@ -2,14 +2,22 @@ import 'package:flutter/material.dart';
 
 import '../../../core/network/api_client.dart';
 import '../../auth/data/auth_service.dart';
+import '../../auth/data/auth_session.dart';
+import '../../auth/presentation/login_screen.dart';
 import '../../auth/presentation/register_screen.dart';
 import '../data/health_service.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key, this.healthService, this.authService});
+  const HomeScreen({
+    super.key,
+    this.healthService,
+    this.authService,
+    this.session,
+  });
 
   final HealthService? healthService;
   final AuthService? authService;
+  final AuthSession? session;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -121,12 +129,32 @@ class _HomeScreenState extends State<HomeScreen> {
                         SizedBox(
                           width: double.infinity,
                           child: FilledButton.icon(
+                            key: const Key('home-login'),
+                            onPressed: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute<void>(
+                                  builder: (_) => LoginScreen(
+                                    authService: widget.authService,
+                                    session: widget.session,
+                                  ),
+                                ),
+                              );
+                            },
+                            icon: const Icon(Icons.login_rounded),
+                            label: const Text('Log In'),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
                             key: const Key('home-create-account'),
                             onPressed: () {
                               Navigator.of(context).push(
                                 MaterialPageRoute<void>(
                                   builder: (_) => RegisterScreen(
                                     authService: widget.authService,
+                                    session: widget.session,
                                   ),
                                 ),
                               );
