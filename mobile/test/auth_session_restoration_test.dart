@@ -49,23 +49,36 @@ void main() {
     },
   );
 
-  test('expired access token is cleared and never sent to backend', () async {
-    final store = FakeTokenStore(session: _expiredSession());
-    var requests = 0;
-    final session = AuthSession(tokenStore: store);
-    await session.restore(
-      _service((_) async {
-        requests += 1;
-        return _profileResponse();
-      }),
-      now: DateTime.utc(2026, 10, 21, 12),
-    );
+  test(
+    'expired access token is refreshed before profile verification',
+    () async {
+      final store = FakeTokenStore(session: _expiredSession());
+      var refreshRequests = 0;
+      var profileRequests = 0;
+      final session = AuthSession(tokenStore: store);
+      await session.restore(
+        _service((request) async {
+          if (request.url.path.endsWith('/refresh')) {
+            refreshRequests += 1;
+            expect(jsonDecode(request.body), {
+              'refresh_token': 'still-not-refreshed',
+            });
+            return _refreshResponse();
+          }
+          profileRequests += 1;
+          expect(request.headers['authorization'], 'Bearer rotated-access');
+          return _profileResponse();
+        }),
+        now: DateTime.utc(2026, 10, 21, 12),
+      );
 
-    expect(requests, 0);
-    expect(store.clearCount, 1);
-    expect(session.state, AuthSessionState.requiresLogin);
-    expect(session.message, contains('expired'));
-  });
+      expect(refreshRequests, 1);
+      expect(profileRequests, 1);
+      expect(store.saveCount, 1);
+      expect(session.state, AuthSessionState.authenticated);
+      expect(session.accessToken, 'rotated-access');
+    },
+  );
 
   test('401 clears saved and in-memory authentication', () async {
     final store = FakeTokenStore(session: _validSession());
@@ -180,6 +193,17 @@ http.Response _profileResponse() => http.Response(
     'preferred_language': 'English',
     'is_active': true,
     'created_at': '2026-10-20T12:00:00Z',
+  }),
+  200,
+);
+
+http.Response _refreshResponse() => http.Response(
+  jsonEncode({
+    'access_token': 'rotated-access',
+    'refresh_token': 'rotated-refresh',
+    'token_type': 'bearer',
+    'expires_in': 1800,
+    'refresh_expires_in': 604800,
   }),
   200,
 );

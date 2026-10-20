@@ -22,7 +22,7 @@ void main() {
     );
     await tester.pump();
 
-    expect(find.text('Checking your session...'), findsOneWidget);
+    expect(find.text('Restoring your session...'), findsOneWidget);
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
     pending.complete(null);
     await tester.pumpAndSettle();
