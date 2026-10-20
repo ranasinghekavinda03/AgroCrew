@@ -86,13 +86,13 @@ class _LoginScreenState extends State<LoginScreen> {
         password: _passwordController.text,
       );
       if (!mounted) return;
-      _session.begin(response);
       _passwordController.clear();
       await Navigator.of(context).push(
         MaterialPageRoute<void>(
           builder: (_) => AuthenticatedProfileScreen(
             authService: _authService,
             session: _session,
+            pendingTokens: response,
           ),
         ),
       );

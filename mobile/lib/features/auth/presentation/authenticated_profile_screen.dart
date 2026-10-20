@@ -2,16 +2,20 @@ import 'package:flutter/material.dart';
 
 import '../data/auth_service.dart';
 import '../data/auth_session.dart';
+import '../data/auth_token_store.dart';
+import '../data/models/login_response.dart';
 
 class AuthenticatedProfileScreen extends StatefulWidget {
   const AuthenticatedProfileScreen({
     super.key,
     required this.authService,
     required this.session,
+    this.pendingTokens,
   });
 
   final AuthService authService;
   final AuthSession session;
+  final LoginResponse? pendingTokens;
 
   @override
   State<AuthenticatedProfileScreen> createState() =>
@@ -20,50 +24,49 @@ class AuthenticatedProfileScreen extends StatefulWidget {
 
 class _AuthenticatedProfileScreenState
     extends State<AuthenticatedProfileScreen> {
-  bool _isLoading = true;
+  late bool _isLoading;
   bool _requiresLogin = false;
   String? _errorMessage;
 
   @override
   void initState() {
     super.initState();
-    _loadProfile();
+    _isLoading = widget.pendingTokens != null;
+    if (_isLoading) _verifyPendingLogin();
   }
 
-  Future<void> _loadProfile() async {
-    final token = widget.session.accessToken;
-    if (token == null) {
-      setState(() {
-        _isLoading = false;
-        _requiresLogin = true;
-        _errorMessage = 'Your session is no longer valid. Please log in again.';
-      });
-      return;
-    }
+  Future<void> _verifyPendingLogin() async {
+    final tokens = widget.pendingTokens;
+    if (tokens == null) return;
     setState(() {
       _isLoading = true;
       _errorMessage = null;
     });
     try {
-      final profile = await widget.authService.getCurrentUser(token);
-      if (!mounted) return;
-      widget.session.verify(profile);
-      setState(() => _isLoading = false);
+      final profile = await widget.authService.getCurrentUser(
+        tokens.accessToken,
+      );
+      await widget.session.establishVerified(tokens, profile);
+      if (mounted) setState(() => _isLoading = false);
     } on ProfileException catch (error) {
       if (!mounted) return;
-      if (error.type == ProfileFailureType.unauthorized) {
-        widget.session.clear();
-        setState(() {
-          _isLoading = false;
-          _requiresLogin = true;
-          _errorMessage = error.message;
-        });
-      } else {
-        setState(() {
-          _isLoading = false;
-          _errorMessage = error.message;
-        });
-      }
+      setState(() {
+        _isLoading = false;
+        _requiresLogin = error.type == ProfileFailureType.unauthorized;
+        _errorMessage = error.message;
+      });
+    } on AuthTokenStoreException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _errorMessage = error.message;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _errorMessage = 'Your session could not be verified. Please try again.';
+      });
     }
   }
 
@@ -115,7 +118,7 @@ class _AuthenticatedProfileScreenState
                             const Text('Status: Authenticated'),
                             const SizedBox(height: 20),
                             Text(
-                              'This session is kept only in memory and will not survive a full app restart.',
+                              'On Android, this verified session can be restored while the access token remains valid. Web sessions end on reload.',
                               style: theme.textTheme.bodyMedium?.copyWith(
                                 color: theme.colorScheme.onSurfaceVariant,
                               ),
@@ -143,7 +146,7 @@ class _AuthenticatedProfileScreenState
                           ),
                           onPressed: _requiresLogin
                               ? () => Navigator.of(context).pop()
-                              : _loadProfile,
+                              : _verifyPendingLogin,
                           icon: Icon(
                             _requiresLogin ? Icons.login : Icons.refresh,
                           ),
