@@ -56,7 +56,7 @@ void main() {
 
     await tester.enterText(
       find.byKey(const Key('register-name-field')),
-      'Step 15 Disposable Farmer',
+      'Step 16 Disposable Farmer',
     );
     await tester.enterText(
       find.byKey(const Key('register-email-field')),
@@ -82,37 +82,79 @@ void main() {
     );
 
     expect(
-      find.text(
-        'Account created successfully. You can log in when the login feature is available.',
-      ),
+      find.text('Account created successfully. You can now log in.'),
       findsOneWidget,
+    );
+    await tester.ensureVisible(find.byKey(const Key('registration-login')));
+    await tester.tap(find.byKey(const Key('registration-login')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Welcome Back'), findsOneWidget);
+    await tester.enterText(
+      find.byKey(const Key('login-email-field')),
+      _integrationEmail.toUpperCase(),
+    );
+    await tester.enterText(
+      find.byKey(const Key('login-password-field')),
+      '${_integrationPassword}wrong',
+    );
+    await tester.pump();
+    await tester.ensureVisible(find.byKey(const Key('login-submit')));
+    expect(
+      tester
+          .widget<FilledButton>(find.byKey(const Key('login-submit')))
+          .onPressed,
+      isNotNull,
+    );
+    await tester.tap(find.byKey(const Key('login-submit')));
+    await tester.pump();
+    expect(find.text('Logging In...'), findsOneWidget);
+    await tester.pumpAndSettle(
+      const Duration(milliseconds: 100),
+      EnginePhase.sendSemanticsUpdate,
+      const Duration(seconds: 20),
+    );
+    expect(find.text('Invalid email or password.'), findsOneWidget);
+
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    expect(find.text('Backend Connected'), findsOneWidget);
+    await tester.ensureVisible(find.byKey(const Key('home-login')));
+    await tester.tap(find.byKey(const Key('home-login')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('login-email-field')),
+      _integrationEmail.toUpperCase(),
     );
 
     await tester.enterText(
-      find.byKey(const Key('register-password-field')),
-      _integrationPassword,
-    );
-    await tester.enterText(
-      find.byKey(const Key('register-confirm-password-field')),
+      find.byKey(const Key('login-password-field')),
       _integrationPassword,
     );
     await tester.pump();
-    await tester.ensureVisible(submit);
-    await tester.tap(submit);
+    await tester.ensureVisible(find.byKey(const Key('login-submit')));
+    expect(
+      tester
+          .widget<FilledButton>(find.byKey(const Key('login-submit')))
+          .onPressed,
+      isNotNull,
+    );
+    await tester.tap(find.byKey(const Key('login-submit')));
+    await tester.pump();
+    expect(find.text('Logging In...'), findsOneWidget);
     await tester.pumpAndSettle(
       const Duration(milliseconds: 100),
       EnginePhase.sendSemanticsUpdate,
       const Duration(seconds: 20),
     );
 
+    expect(find.text('Welcome to AgroCrew!'), findsOneWidget);
+    expect(find.text('Hello, Step 16 Disposable Farmer'), findsOneWidget);
     expect(
-      find.text('This email address is already registered.'),
+      find.text('Email: ${_integrationEmail.toLowerCase()}'),
       findsOneWidget,
     );
-
-    await tester.pageBack();
-    await tester.pumpAndSettle();
-    expect(find.text('Backend Connected'), findsOneWidget);
-    expect(find.byKey(const Key('home-create-account')), findsOneWidget);
+    expect(find.text('Status: Authenticated'), findsOneWidget);
+    expect(find.textContaining(_integrationPassword), findsNothing);
   });
 }
