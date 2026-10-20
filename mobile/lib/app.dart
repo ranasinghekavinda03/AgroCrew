@@ -58,7 +58,9 @@ class _AgroCrewAppState extends State<AgroCrewApp> {
       home: ListenableBuilder(
         listenable: _session,
         builder: (context, _) => switch (_session.state) {
-          AuthSessionState.restoring => const _SessionLoadingScreen(),
+          AuthSessionState.restoring => _SessionLoadingScreen(
+            message: _session.message ?? 'Restoring your session...',
+          ),
           AuthSessionState.authenticated => AuthenticatedProfileScreen(
             authService: _authService,
             session: _session,
@@ -81,7 +83,9 @@ class _AgroCrewAppState extends State<AgroCrewApp> {
 }
 
 class _SessionLoadingScreen extends StatelessWidget {
-  const _SessionLoadingScreen();
+  const _SessionLoadingScreen({required this.message});
+
+  final String message;
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -90,16 +94,16 @@ class _SessionLoadingScreen extends StatelessWidget {
         child: Semantics(
           liveRegion: true,
           label: 'Checking your session',
-          child: const Column(
+          child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(Icons.eco_outlined, size: 56),
               SizedBox(height: 20),
-              Text('AgroCrew', style: TextStyle(fontSize: 28)),
-              SizedBox(height: 18),
-              CircularProgressIndicator(),
-              SizedBox(height: 14),
-              Text('Checking your session...'),
+              const Text('AgroCrew', style: TextStyle(fontSize: 28)),
+              const SizedBox(height: 18),
+              const CircularProgressIndicator(),
+              const SizedBox(height: 14),
+              Text(message),
             ],
           ),
         ),

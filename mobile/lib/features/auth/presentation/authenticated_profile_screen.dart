@@ -118,7 +118,7 @@ class _AuthenticatedProfileScreenState
                             const Text('Status: Authenticated'),
                             const SizedBox(height: 20),
                             Text(
-                              'On Android, this verified session can be restored while the access token remains valid. Web sessions end on reload.',
+                              'On Android, this verified session can be securely restored and refreshed. Web sessions end on reload.',
                               style: theme.textTheme.bodyMedium?.copyWith(
                                 color: theme.colorScheme.onSurfaceVariant,
                               ),
