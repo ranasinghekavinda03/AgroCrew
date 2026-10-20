@@ -2,11 +2,14 @@ import 'package:flutter/material.dart';
 
 import '../../../core/network/api_client.dart';
 import '../data/auth_service.dart';
+import '../data/auth_session.dart';
+import 'login_screen.dart';
 
 class RegisterScreen extends StatefulWidget {
-  const RegisterScreen({super.key, this.authService});
+  const RegisterScreen({super.key, this.authService, this.session});
 
   final AuthService? authService;
+  final AuthSession? session;
 
   @override
   State<RegisterScreen> createState() => _RegisterScreenState();
@@ -130,9 +133,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       _confirmPasswordController.clear();
       setState(() {
         _registrationSucceeded = true;
-        _statusMessage =
-            'Account created successfully. You can log in when the login '
-            'feature is available.';
+        _statusMessage = 'Account created successfully. You can now log in.';
       });
     } on RegistrationException catch (error) {
       if (!mounted) return;
@@ -308,6 +309,24 @@ class _RegisterScreenState extends State<RegisterScreen> {
                           _RegistrationMessage(
                             message: message,
                             isSuccess: _registrationSucceeded,
+                          ),
+                        ],
+                        if (_registrationSucceeded) ...[
+                          const SizedBox(height: 12),
+                          OutlinedButton.icon(
+                            key: const Key('registration-login'),
+                            onPressed: () {
+                              Navigator.of(context).pushReplacement(
+                                MaterialPageRoute<void>(
+                                  builder: (_) => LoginScreen(
+                                    authService: widget.authService,
+                                    session: widget.session,
+                                  ),
+                                ),
+                              );
+                            },
+                            icon: const Icon(Icons.login_rounded),
+                            label: const Text('Log In'),
                           ),
                         ],
                         const SizedBox(height: 28),
