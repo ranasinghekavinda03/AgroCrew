@@ -197,6 +197,80 @@ void main() {
       );
     });
   });
+
+  group('AuthService refresh', () {
+    test(
+      'posts only the refresh token and parses rotated credentials',
+      () async {
+        final issuedAt = DateTime.utc(2026, 10, 21, 12);
+        final service = AuthService(
+          ApiClient(
+            client: MockClient((request) async {
+              expect(request.method, 'POST');
+              expect(request.url.path, '/api/v1/auth/refresh');
+              expect(jsonDecode(request.body), {
+                'refresh_token': 'opaque-refresh-value',
+              });
+              expect(request.headers.toString(), isNot(contains('Bearer')));
+              return _loginResponse();
+            }),
+          ),
+          clock: () => issuedAt,
+        );
+
+        final result = await service.refreshSession('opaque-refresh-value');
+        expect(result.accessToken, 'signed.jwt.value');
+        expect(result.issuedAt, issuedAt);
+        expect(
+          result.accessTokenExpiresAt,
+          issuedAt.add(const Duration(minutes: 30)),
+        );
+      },
+    );
+
+    for (final scenario in [
+      (401, RefreshFailureType.unauthorized, true),
+      (422, RefreshFailureType.validation, true),
+      (500, RefreshFailureType.server, false),
+    ]) {
+      test('maps refresh HTTP ${scenario.$1} safely', () async {
+        final service = _serviceWith(
+          (_) async => http.Response('{"detail":"private-token"}', scenario.$1),
+        );
+        await expectLater(
+          service.refreshSession('secret-refresh'),
+          throwsA(
+            isA<RefreshException>()
+                .having((error) => error.type, 'type', scenario.$2)
+                .having((error) => error.isPermanent, 'permanent', scenario.$3)
+                .having(
+                  (error) => error.message,
+                  'safe message',
+                  isNot(contains('secret-refresh')),
+                ),
+          ),
+        );
+      });
+    }
+
+    test('maps refresh connection failure without leaking the token', () async {
+      final service = _serviceWith((request) async {
+        throw http.ClientException('secret-refresh', request.url);
+      });
+      await expectLater(
+        service.refreshSession('secret-refresh'),
+        throwsA(
+          isA<RefreshException>()
+              .having((error) => error.type, 'type', RefreshFailureType.network)
+              .having(
+                (error) => error.message,
+                'safe message',
+                isNot(contains('secret-refresh')),
+              ),
+        ),
+      );
+    });
+  });
 }
 
 Future<dynamic> _login(

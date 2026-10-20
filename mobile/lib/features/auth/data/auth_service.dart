@@ -4,9 +4,13 @@ import 'models/login_response.dart';
 import 'models/user_profile.dart';
 
 class AuthService {
-  AuthService(this._apiClient);
+  AuthService(this._apiClient, {DateTime Function()? clock})
+    : _clock = clock ?? _utcNow;
 
   final ApiClient _apiClient;
+  final DateTime Function() _clock;
+
+  static DateTime _utcNow() => DateTime.now().toUtc();
 
   Future<RegisteredUser> register({
     required String name,
@@ -100,6 +104,59 @@ class AuthService {
     }
   }
 
+  Future<LoginResponse> refreshSession(String refreshToken) async {
+    final ApiResponse response;
+    try {
+      response = await _apiClient.postJson(
+        ApiConfig.endpoint('/api/v1/auth/refresh'),
+        {'refresh_token': refreshToken},
+      );
+    } on ApiException catch (error) {
+      throw switch (error.kind) {
+        ApiErrorKind.network => const RefreshException(
+          RefreshFailureType.network,
+          'Unable to refresh your session. Check your connection and retry.',
+        ),
+        ApiErrorKind.timeout => const RefreshException(
+          RefreshFailureType.timeout,
+          'Session refresh took too long. Check your connection and retry.',
+        ),
+        ApiErrorKind.http ||
+        ApiErrorKind.invalidResponse => const RefreshException(
+          RefreshFailureType.invalidResponse,
+          'AgroCrew returned an unexpected refresh response. Please retry.',
+        ),
+      };
+    }
+
+    switch (response.statusCode) {
+      case 200:
+        try {
+          return _parseLoginResponse(response.body);
+        } on LoginException {
+          throw const RefreshException(
+            RefreshFailureType.invalidResponse,
+            'AgroCrew returned an unexpected refresh response. Please retry.',
+          );
+        }
+      case 401:
+        throw const RefreshException(
+          RefreshFailureType.unauthorized,
+          'Your session has expired. Please log in again.',
+        );
+      case 422:
+        throw const RefreshException(
+          RefreshFailureType.validation,
+          'Your saved session is invalid. Please log in again.',
+        );
+      default:
+        throw const RefreshException(
+          RefreshFailureType.server,
+          'AgroCrew could not refresh your session right now. Please retry.',
+        );
+    }
+  }
+
   Future<UserProfile> getCurrentUser(String accessToken) async {
     final ApiResponse response;
     try {
@@ -170,6 +227,7 @@ class AuthService {
       refreshToken: refreshToken,
       expiresIn: Duration(seconds: expiresIn),
       refreshExpiresIn: Duration(seconds: refreshExpiresIn),
+      issuedAt: _clock().toUtc(),
     );
   }
 
@@ -316,6 +374,29 @@ class LoginException implements Exception {
 
   final LoginFailureType type;
   final String message;
+
+  @override
+  String toString() => message;
+}
+
+enum RefreshFailureType {
+  unauthorized,
+  validation,
+  server,
+  network,
+  timeout,
+  invalidResponse,
+}
+
+class RefreshException implements Exception {
+  const RefreshException(this.type, this.message);
+
+  final RefreshFailureType type;
+  final String message;
+
+  bool get isPermanent =>
+      type == RefreshFailureType.unauthorized ||
+      type == RefreshFailureType.validation;
 
   @override
   String toString() => message;
