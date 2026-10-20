@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:agrocrew/app.dart';
 import 'package:agrocrew/core/network/api_client.dart';
+import 'package:agrocrew/features/auth/data/auth_token_store.dart';
 import 'package:agrocrew/features/home/data/health_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -16,7 +17,9 @@ void main() {
       return http.Response('{"status":"ok","service":"agrocrew-api"}', 200);
     });
 
-    await tester.pumpWidget(AgroCrewApp(healthService: service));
+    await tester.pumpWidget(
+      AgroCrewApp(healthService: service, tokenStore: MemoryAuthTokenStore()),
+    );
     await tester.pumpAndSettle();
 
     expect(find.text('AgroCrew'), findsNWidgets(2));
@@ -40,7 +43,9 @@ void main() {
       return http.Response('{"status":"ok","service":"agrocrew-api"}', 200);
     });
 
-    await tester.pumpWidget(AgroCrewApp(healthService: service));
+    await tester.pumpWidget(
+      AgroCrewApp(healthService: service, tokenStore: MemoryAuthTokenStore()),
+    );
     await tester.pumpAndSettle();
 
     expect(find.text('Backend Unavailable'), findsOneWidget);
@@ -66,7 +71,9 @@ void main() {
     final response = Completer<http.Response>();
     final service = _serviceWith((_) => response.future);
 
-    await tester.pumpWidget(AgroCrewApp(healthService: service));
+    await tester.pumpWidget(
+      AgroCrewApp(healthService: service, tokenStore: MemoryAuthTokenStore()),
+    );
     await tester.pump();
 
     expect(find.text('Checking connection...'), findsOneWidget);
@@ -87,7 +94,9 @@ void main() {
       return http.Response('{"status":"ok","service":"agrocrew-api"}', 200);
     });
 
-    await tester.pumpWidget(AgroCrewApp(healthService: service));
+    await tester.pumpWidget(
+      AgroCrewApp(healthService: service, tokenStore: MemoryAuthTokenStore()),
+    );
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.byKey(const Key('home-create-account')));
     await tester.tap(find.byKey(const Key('home-create-account')));
@@ -112,7 +121,9 @@ void main() {
       return http.Response('{"status":"ok","service":"agrocrew-api"}', 200);
     });
 
-    await tester.pumpWidget(AgroCrewApp(healthService: service));
+    await tester.pumpWidget(
+      AgroCrewApp(healthService: service, tokenStore: MemoryAuthTokenStore()),
+    );
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.byKey(const Key('home-login')));
     await tester.tap(find.byKey(const Key('home-login')));
