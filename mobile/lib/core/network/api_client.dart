@@ -69,6 +69,23 @@ class ApiClient {
   }
 
   Future<ApiResponse> postJson(Uri uri, Map<String, Object?> body) async {
+    return _postJson(uri, body, allowEmptyBody: false);
+  }
+
+  /// Posts JSON while allowing a successful endpoint, such as logout, to
+  /// return an empty response body.
+  Future<ApiResponse> postJsonAllowEmpty(
+    Uri uri,
+    Map<String, Object?> body,
+  ) async {
+    return _postJson(uri, body, allowEmptyBody: true);
+  }
+
+  Future<ApiResponse> _postJson(
+    Uri uri,
+    Map<String, Object?> body, {
+    required bool allowEmptyBody,
+  }) async {
     try {
       final response = await _client
           .post(
@@ -77,6 +94,10 @@ class ApiClient {
             body: jsonEncode(body),
           )
           .timeout(timeout);
+
+      if (allowEmptyBody && response.body.trim().isEmpty) {
+        return ApiResponse(statusCode: response.statusCode, body: const {});
+      }
 
       final Object? decoded;
       try {

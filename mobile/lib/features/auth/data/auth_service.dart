@@ -157,6 +157,52 @@ class AuthService {
     }
   }
 
+  Future<void> logout(String refreshToken) async {
+    final ApiResponse response;
+    try {
+      response = await _apiClient.postJsonAllowEmpty(
+        ApiConfig.endpoint('/api/v1/auth/logout'),
+        {'refresh_token': refreshToken},
+      );
+    } on ApiException catch (error) {
+      throw switch (error.kind) {
+        ApiErrorKind.network => const LogoutException(
+          LogoutFailureType.network,
+          'Server sign-out could not be confirmed. Check your connection.',
+        ),
+        ApiErrorKind.timeout => const LogoutException(
+          LogoutFailureType.timeout,
+          'Server sign-out took too long and could not be confirmed.',
+        ),
+        ApiErrorKind.http ||
+        ApiErrorKind.invalidResponse => const LogoutException(
+          LogoutFailureType.invalidResponse,
+          'AgroCrew returned an unexpected sign-out response.',
+        ),
+      };
+    }
+
+    switch (response.statusCode) {
+      case 204:
+        return;
+      case 422:
+        throw const LogoutException(
+          LogoutFailureType.validation,
+          'The server could not accept this sign-out request.',
+        );
+      case 500:
+        throw const LogoutException(
+          LogoutFailureType.server,
+          'Server sign-out could not be confirmed.',
+        );
+      default:
+        throw const LogoutException(
+          LogoutFailureType.server,
+          'Server sign-out could not be confirmed.',
+        );
+    }
+  }
+
   Future<UserProfile> getCurrentUser(String accessToken) async {
     final ApiResponse response;
     try {
@@ -397,6 +443,18 @@ class RefreshException implements Exception {
   bool get isPermanent =>
       type == RefreshFailureType.unauthorized ||
       type == RefreshFailureType.validation;
+
+  @override
+  String toString() => message;
+}
+
+enum LogoutFailureType { validation, server, network, timeout, invalidResponse }
+
+class LogoutException implements Exception {
+  const LogoutException(this.type, this.message);
+
+  final LogoutFailureType type;
+  final String message;
 
   @override
   String toString() => message;
