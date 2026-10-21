@@ -114,6 +114,27 @@ class _HomeScreenState extends State<HomeScreen> {
                             color: colors.onSurfaceVariant,
                           ),
                         ),
+                        if (widget.session?.message case final message?) ...[
+                          const SizedBox(height: 20),
+                          Semantics(
+                            liveRegion: true,
+                            child: Container(
+                              key: const Key('session-status-message'),
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(16),
+                              decoration: BoxDecoration(
+                                color: colors.secondaryContainer,
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              child: Text(
+                                message,
+                                style: TextStyle(
+                                  color: colors.onSecondaryContainer,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
                         const SizedBox(height: 36),
                         Text(
                           'Backend Connection',

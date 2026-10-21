@@ -61,6 +61,9 @@ class _AgroCrewAppState extends State<AgroCrewApp> {
           AuthSessionState.restoring => _SessionLoadingScreen(
             message: _session.message ?? 'Restoring your session...',
           ),
+          AuthSessionState.signingOut => _SessionLoadingScreen(
+            message: _session.message ?? 'Signing you out securely...',
+          ),
           AuthSessionState.authenticated => AuthenticatedProfileScreen(
             authService: _authService,
             session: _session,
@@ -71,6 +74,9 @@ class _AgroCrewAppState extends State<AgroCrewApp> {
             authService: _authService,
             healthService: widget.healthService,
           ),
+          AuthSessionState.cleanupError => _CleanupErrorScreen(
+            session: _session,
+          ),
           AuthSessionState.unauthenticated => HomeScreen(
             healthService: widget.healthService,
             authService: _authService,
@@ -80,6 +86,50 @@ class _AgroCrewAppState extends State<AgroCrewApp> {
       ),
     );
   }
+}
+
+class _CleanupErrorScreen extends StatelessWidget {
+  const _CleanupErrorScreen({required this.session});
+
+  final AuthSession session;
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Secure Sign-Out')),
+    body: SafeArea(
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 520),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.security_update_warning_outlined,
+                  size: 52,
+                  color: Theme.of(context).colorScheme.error,
+                ),
+                const SizedBox(height: 18),
+                Text(
+                  session.message ??
+                      'Saved credentials could not be removed securely.',
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 20),
+                FilledButton.icon(
+                  key: const Key('retry-logout-cleanup'),
+                  onPressed: session.retryLogoutCleanup,
+                  icon: const Icon(Icons.delete_forever_outlined),
+                  label: const Text('Retry Secure Cleanup'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 class _SessionLoadingScreen extends StatelessWidget {

@@ -26,6 +26,7 @@ class _AuthenticatedProfileScreenState
     extends State<AuthenticatedProfileScreen> {
   late bool _isLoading;
   bool _requiresLogin = false;
+  bool _isLoggingOut = false;
   String? _errorMessage;
 
   @override
@@ -67,6 +68,38 @@ class _AuthenticatedProfileScreenState
         _isLoading = false;
         _errorMessage = 'Your session could not be verified. Please try again.';
       });
+    }
+  }
+
+  Future<void> _confirmLogout() async {
+    if (_isLoggingOut) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Log out of AgroCrew?'),
+        content: const Text('Your session on this device will end.'),
+        actions: [
+          TextButton(
+            key: const Key('logout-cancel'),
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('logout-confirm'),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Log Out'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted || _isLoggingOut) return;
+    setState(() => _isLoggingOut = true);
+    final result = await widget.session.logout(widget.authService);
+    if (!mounted) return;
+    if (result.localCleanupSucceeded) {
+      Navigator.of(context).popUntil((route) => route.isFirst);
+    } else {
+      setState(() => _isLoggingOut = false);
     }
   }
 
@@ -121,6 +154,22 @@ class _AuthenticatedProfileScreenState
                               'On Android, this verified session can be securely restored and refreshed. Web sessions end on reload.',
                               style: theme.textTheme.bodyMedium?.copyWith(
                                 color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                            const SizedBox(height: 24),
+                            OutlinedButton.icon(
+                              key: const Key('logout-button'),
+                              onPressed: _isLoggingOut ? null : _confirmLogout,
+                              icon: _isLoggingOut
+                                  ? const SizedBox.square(
+                                      dimension: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Icon(Icons.logout_rounded),
+                              label: Text(
+                                _isLoggingOut ? 'Logging Out...' : 'Log Out',
                               ),
                             ),
                           ],
