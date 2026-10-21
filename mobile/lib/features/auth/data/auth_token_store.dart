@@ -158,6 +158,18 @@ class JsonAuthTokenStore implements AuthTokenStore {
     try {
       await _storage.delete(sessionKey);
     } on Object {
+      try {
+        // Fail closed across an app restart. Even when deletion itself fails,
+        // replace token material with an invalid encrypted tombstone where the
+        // secure store still permits writes. Cleanup is still reported as
+        // failed so the farmer can retry deleting the record completely.
+        await _storage.write(
+          sessionKey,
+          jsonEncode({'version': _version, 'signed_out': true}),
+        );
+      } on Object {
+        // The caller still enters the blocked cleanup-retry state below.
+      }
       throw const AuthTokenStoreException(
         'Your saved session could not be removed securely.',
       );

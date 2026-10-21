@@ -74,6 +74,11 @@ void main() {
         store.clearSession(),
         throwsA(isA<AuthTokenStoreException>()),
       );
+      final tombstone = backend.values[JsonAuthTokenStore.sessionKey]!;
+      expect(tombstone, isNot(contains('access-value')));
+      expect(tombstone, isNot(contains('refresh-value')));
+      backend.failDelete = false;
+      expect(await store.readSession(), isNull);
     });
   });
 

@@ -9,6 +9,8 @@ enum AuthSessionState {
   unauthenticated,
   restoring,
   authenticated,
+  signingOut,
+  cleanupError,
   requiresLogin,
   verificationError,
 }
@@ -30,6 +32,10 @@ class AuthSession extends ChangeNotifier {
   String? _message;
   Future<void>? _restoreOperation;
   Future<LoginResponse>? _refreshOperation;
+  Future<LogoutResult>? _logoutOperation;
+  bool _logoutRequested = false;
+  bool _lastRemoteLogoutConfirmed = false;
+  bool _disposed = false;
   int _generation = 0;
 
   static DateTime _utcNow() => DateTime.now().toUtc();
@@ -44,10 +50,27 @@ class AuthSession extends ChangeNotifier {
   UserProfile? get profile => _profile;
   bool get isVerified => _tokens != null && _profile != null;
 
+  @override
+  void notifyListeners() {
+    if (!_disposed) super.notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _generation += 1;
+    super.dispose();
+  }
+
   Future<void> establishVerified(
     LoginResponse response,
     UserProfile profile,
   ) async {
+    if (_logoutRequested) {
+      throw const AuthTokenStoreException(
+        'Sign-out must finish before a new session can be saved.',
+      );
+    }
     _generation += 1;
     final refresh = _refreshOperation;
     if (refresh != null) {
@@ -73,6 +96,14 @@ class AuthSession extends ChangeNotifier {
   }
 
   Future<LoginResponse> refresh(AuthService authService) {
+    if (_logoutRequested) {
+      return Future<LoginResponse>.error(
+        const RefreshException(
+          RefreshFailureType.unauthorized,
+          'This session is signing out.',
+        ),
+      );
+    }
     final tokens = _tokens;
     if (tokens == null) {
       return Future<LoginResponse>.error(
@@ -88,7 +119,122 @@ class AuthSession extends ChangeNotifier {
   /// Performs the current safe protected request with proactive refresh and a
   /// single refresh-and-retry on an unexpected 401.
   Future<UserProfile> getCurrentUser(AuthService authService) =>
-      _verifyCurrentUser(authService, _generation);
+      _logoutRequested
+      ? Future<UserProfile>.error(const _StaleSessionException())
+      : _verifyCurrentUser(authService, _generation);
+
+  /// Ends the local session and asks the backend to revoke its refresh token.
+  ///
+  /// Access JWTs are stateless and may remain valid on the server until their
+  /// normal expiry. This method removes the local JWT, stops authenticated
+  /// requests, and revokes the refresh token when the server can be reached.
+  Future<LogoutResult> logout(AuthService authService) {
+    final active = _logoutOperation;
+    if (active != null) return active;
+
+    _logoutRequested = true;
+    _generation += 1;
+    final originalRefreshToken = _tokens?.refreshToken;
+    final activeRefresh = _refreshOperation;
+    _tokens = null;
+    _profile = null;
+    _state = AuthSessionState.signingOut;
+    _message = 'Signing you out securely...';
+    notifyListeners();
+
+    late final Future<LogoutResult> operation;
+    operation = _performLogout(authService, originalRefreshToken, activeRefresh)
+        .whenComplete(() {
+          if (identical(_logoutOperation, operation)) _logoutOperation = null;
+        });
+    _logoutOperation = operation;
+    return operation;
+  }
+
+  Future<LogoutResult> _performLogout(
+    AuthService authService,
+    String? originalRefreshToken,
+    Future<LoginResponse>? activeRefresh,
+  ) async {
+    var refreshToken = originalRefreshToken;
+    var refreshOutcomeUncertain = false;
+    if (activeRefresh != null) {
+      try {
+        final rotated = await activeRefresh;
+        refreshToken = rotated.refreshToken;
+      } on Object {
+        refreshOutcomeUncertain = true;
+        // The old token is still the best revocation candidate. If the server
+        // rotated it but the response was lost, remote revocation is unknowable.
+      }
+    }
+
+    var localCleanupSucceeded = false;
+    var remoteLogoutConfirmed = refreshToken == null;
+    try {
+      await _tokenStore.clearSession();
+      localCleanupSucceeded = true;
+    } on AuthTokenStoreException {
+      // Memory already failed closed. The retry state below keeps restoration
+      // blocked until encrypted-storage deletion succeeds.
+    }
+
+    if (refreshToken != null) {
+      try {
+        await authService.logout(refreshToken);
+        remoteLogoutConfirmed = !refreshOutcomeUncertain;
+      } on LogoutException {
+        remoteLogoutConfirmed = false;
+      } on Object {
+        remoteLogoutConfirmed = false;
+      }
+    }
+    _lastRemoteLogoutConfirmed = remoteLogoutConfirmed;
+
+    if (!localCleanupSucceeded) {
+      _state = AuthSessionState.cleanupError;
+      _message = remoteLogoutConfirmed
+          ? 'Server sign-out succeeded, but saved credentials could not be removed securely. Retry secure cleanup.'
+          : 'Saved credentials could not be removed securely, and server sign-out could not be confirmed. Retry secure cleanup.';
+      notifyListeners();
+      return LogoutResult(
+        localCleanupSucceeded: false,
+        remoteLogoutConfirmed: remoteLogoutConfirmed,
+        message: _message!,
+      );
+    }
+
+    _logoutRequested = false;
+    _state = AuthSessionState.unauthenticated;
+    _message = remoteLogoutConfirmed
+        ? 'Signed out securely on this device.'
+        : 'Signed out on this device. Server sign-out could not be confirmed.';
+    notifyListeners();
+    return LogoutResult(
+      localCleanupSucceeded: true,
+      remoteLogoutConfirmed: remoteLogoutConfirmed,
+      message: _message!,
+    );
+  }
+
+  Future<void> retryLogoutCleanup() async {
+    if (_state != AuthSessionState.cleanupError) return;
+    _state = AuthSessionState.signingOut;
+    _message = 'Retrying secure cleanup...';
+    notifyListeners();
+    try {
+      await _tokenStore.clearSession();
+      _logoutRequested = false;
+      _state = AuthSessionState.unauthenticated;
+      _message = _lastRemoteLogoutConfirmed
+          ? 'Saved credentials were removed. You are signed out securely on this device.'
+          : 'Saved credentials were removed. Server sign-out could not be confirmed.';
+    } on AuthTokenStoreException {
+      _state = AuthSessionState.cleanupError;
+      _message = 'Saved credentials still could not be removed securely. Please retry.';
+    }
+    notifyListeners();
+  }
 
   Future<void> _restore(AuthService authService, DateTime? suppliedNow) async {
     final generation = ++_generation;
@@ -233,6 +379,10 @@ class AuthSession extends ChangeNotifier {
       );
     }
     final rotated = await authService.refreshSession(source.refreshToken);
+    if (generation != _generation && _logoutRequested) {
+      // Give logout the successor token without persisting or activating it.
+      return rotated;
+    }
     final current = _requireCurrentTokens(generation);
     if (current.refreshToken != source.refreshToken) {
       throw const _StaleSessionException();
@@ -295,6 +445,18 @@ class AuthSession extends ChangeNotifier {
     _message = message;
     notifyListeners();
   }
+}
+
+class LogoutResult {
+  const LogoutResult({
+    required this.localCleanupSucceeded,
+    required this.remoteLogoutConfirmed,
+    required this.message,
+  });
+
+  final bool localCleanupSucceeded;
+  final bool remoteLogoutConfirmed;
+  final String message;
 }
 
 class _StaleSessionException implements Exception {
