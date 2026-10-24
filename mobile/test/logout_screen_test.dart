@@ -69,6 +69,40 @@ void main() {
     );
     expect(find.textContaining('widget-refresh'), findsNothing);
   });
+
+  testWidgets('root navigator clears a profile pushed by a fresh login', (
+    tester,
+  ) async {
+    final harness = _Harness();
+    await tester.pumpWidget(harness.app(authenticated: false));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const Key('home-login')));
+    await tester.tap(find.byKey(const Key('home-login')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('login-email-field')),
+      'logout@example.com',
+    );
+    await tester.enterText(
+      find.byKey(const Key('login-password-field')),
+      'DisposablePassword123!',
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('login-submit')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('authenticated-profile')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('logout-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('logout-confirm')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('home-login')), findsOneWidget);
+    expect(find.byKey(const Key('authenticated-profile')), findsNothing);
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('authenticated-profile')), findsNothing);
+  });
 }
 
 class _Harness {
@@ -79,6 +113,18 @@ class _Harness {
 
   late final MockClient client = MockClient((request) async {
     if (request.url.path.endsWith('/auth/me')) return _profileResponse();
+    if (request.url.path.endsWith('/auth/login')) {
+      return http.Response(
+        jsonEncode({
+          'access_token': 'widget-access',
+          'refresh_token': 'widget-refresh',
+          'token_type': 'bearer',
+          'expires_in': 1800,
+          'refresh_expires_in': 604800,
+        }),
+        200,
+      );
+    }
     if (request.url.path.endsWith('/auth/logout')) {
       logoutRequests += 1;
       if (remoteFailure) throw http.ClientException('offline', request.url);
@@ -87,7 +133,7 @@ class _Harness {
     return http.Response('{"status":"ok","service":"agrocrew-api"}', 200);
   });
 
-  Widget app() {
+  Widget app({bool authenticated = true}) {
     final apiClient = ApiClient(
       client: client,
       timeout: const Duration(seconds: 1),
@@ -95,7 +141,7 @@ class _Harness {
     return AgroCrewApp(
       authService: AuthService(apiClient),
       healthService: HealthService(apiClient),
-      tokenStore: _Store(_session()),
+      tokenStore: _Store(authenticated ? _session() : null),
     );
   }
 }

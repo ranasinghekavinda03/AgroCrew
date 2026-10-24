@@ -27,6 +27,7 @@ class AgroCrewApp extends StatefulWidget {
 }
 
 class _AgroCrewAppState extends State<AgroCrewApp> {
+  final _navigatorKey = GlobalKey<NavigatorState>();
   late final AuthService _authService;
   late final bool _ownsAuthService;
   late final AuthSession _session;
@@ -39,11 +40,20 @@ class _AgroCrewAppState extends State<AgroCrewApp> {
     _session = AuthSession(
       tokenStore: widget.tokenStore ?? createAuthTokenStore(),
     );
+    _session.addListener(_clearProtectedRoutes);
     _session.restore(_authService);
+  }
+
+  void _clearProtectedRoutes() {
+    if (_session.state == AuthSessionState.authenticated) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _navigatorKey.currentState?.popUntil((route) => route.isFirst);
+    });
   }
 
   @override
   void dispose() {
+    _session.removeListener(_clearProtectedRoutes);
     _session.dispose();
     if (_ownsAuthService) _authService.close();
     super.dispose();
@@ -52,6 +62,7 @@ class _AgroCrewAppState extends State<AgroCrewApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: _navigatorKey,
       title: 'AgroCrew',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light,
