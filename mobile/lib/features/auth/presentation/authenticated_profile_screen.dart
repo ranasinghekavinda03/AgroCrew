@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../../../core/network/api_client.dart';
+import '../../farms/data/farm_service.dart';
+import '../../farms/presentation/my_farms_screen.dart';
 import '../data/auth_service.dart';
 import '../data/auth_session.dart';
 import '../data/auth_token_store.dart';
@@ -28,12 +31,26 @@ class _AuthenticatedProfileScreenState
   bool _requiresLogin = false;
   bool _isLoggingOut = false;
   String? _errorMessage;
+  late final ApiClient _farmApiClient;
+  late final FarmService _farmService;
 
   @override
   void initState() {
     super.initState();
+    _farmApiClient = ApiClient();
+    _farmService = FarmService(
+      apiClient: _farmApiClient,
+      session: widget.session,
+      authService: widget.authService,
+    );
     _isLoading = widget.pendingTokens != null;
     if (_isLoading) _verifyPendingLogin();
+  }
+
+  @override
+  void dispose() {
+    _farmApiClient.close();
+    super.dispose();
   }
 
   Future<void> _verifyPendingLogin() async {
@@ -157,6 +174,22 @@ class _AuthenticatedProfileScreenState
                               ),
                             ),
                             const SizedBox(height: 24),
+                            FilledButton.icon(
+                              key: const Key('my-farms-button'),
+                              onPressed: _isLoggingOut
+                                  ? null
+                                  : () => Navigator.of(context).push<void>(
+                                      MaterialPageRoute(
+                                        builder: (_) => MyFarmsScreen(
+                                          farmService: _farmService,
+                                          session: widget.session,
+                                        ),
+                                      ),
+                                    ),
+                              icon: const Icon(Icons.agriculture_outlined),
+                              label: const Text('My Farms'),
+                            ),
+                            const SizedBox(height: 12),
                             OutlinedButton.icon(
                               key: const Key('logout-button'),
                               onPressed: _isLoggingOut ? null : _confirmLogout,
