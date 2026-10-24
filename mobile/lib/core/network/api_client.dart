@@ -68,6 +68,56 @@ class ApiClient {
     }
   }
 
+  Future<ApiDecodedResponse> getDecodedResponse(
+    Uri uri, {
+    Map<String, String>? headers,
+  }) => _decodedRequest(() => _client.get(uri, headers: headers));
+
+  Future<ApiDecodedResponse> postJsonWithHeaders(
+    Uri uri,
+    Map<String, Object?> body, {
+    Map<String, String>? headers,
+  }) => _decodedRequest(
+    () => _client.post(
+      uri,
+      headers: {'Content-Type': 'application/json', ...?headers},
+      body: jsonEncode(body),
+    ),
+  );
+
+  Future<ApiDecodedResponse> _decodedRequest(
+    Future<http.Response> Function() send,
+  ) async {
+    try {
+      final response = await send().timeout(timeout);
+      final Object? decoded;
+      try {
+        decoded = jsonDecode(response.body);
+      } on FormatException catch (error) {
+        throw ApiException(
+          'The backend returned invalid JSON.',
+          cause: error,
+          kind: ApiErrorKind.invalidResponse,
+        );
+      }
+      return ApiDecodedResponse(statusCode: response.statusCode, body: decoded);
+    } on TimeoutException catch (error) {
+      throw ApiException(
+        'The backend request timed out.',
+        cause: error,
+        kind: ApiErrorKind.timeout,
+      );
+    } on ApiException {
+      rethrow;
+    } on Object catch (error) {
+      throw ApiException(
+        'Unable to connect to the backend.',
+        cause: error,
+        kind: ApiErrorKind.network,
+      );
+    }
+  }
+
   Future<ApiResponse> postJson(Uri uri, Map<String, Object?> body) async {
     return _postJson(uri, body, allowEmptyBody: false);
   }
@@ -143,6 +193,13 @@ class ApiResponse {
 
   final int statusCode;
   final Map<String, dynamic> body;
+}
+
+class ApiDecodedResponse {
+  const ApiDecodedResponse({required this.statusCode, required this.body});
+
+  final int statusCode;
+  final Object? body;
 }
 
 enum ApiErrorKind { http, network, timeout, invalidResponse }
