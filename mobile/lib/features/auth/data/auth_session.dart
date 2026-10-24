@@ -49,6 +49,64 @@ class AuthSession extends ChangeNotifier {
   DateTime? get refreshTokenExpiresAt => _tokens?.refreshTokenExpiresAt;
   UserProfile? get profile => _profile;
   bool get isVerified => _tokens != null && _profile != null;
+  int get generation => _generation;
+
+  bool isCurrentGeneration(int value) =>
+      !_disposed &&
+      value == _generation &&
+      _state == AuthSessionState.authenticated &&
+      isVerified;
+
+  Future<AuthenticatedAccess> authenticatedAccess(
+    AuthService authService,
+  ) async {
+    final generation = _generation;
+    var tokens = _requireCurrentTokens(generation);
+    final now = _clock().toUtc();
+    if (_state != AuthSessionState.authenticated || _profile == null) {
+      throw const AuthSessionAccessException();
+    }
+    if (_needsRefresh(tokens, now)) {
+      if (!_canRefresh(tokens, now)) {
+        await _clearAndRequireLogin(
+          'Your session has expired. Please log in again.',
+          generation,
+        );
+        throw const AuthSessionAccessException();
+      }
+      try {
+        tokens = await _refreshSingleFlight(authService, tokens, generation);
+      } on RefreshException catch (error) {
+        if (error.isPermanent) {
+          await _clearAndRequireLogin(error.message, generation);
+        }
+        rethrow;
+      }
+    }
+    _requireCurrentTokens(generation);
+    return AuthenticatedAccess(tokens.accessToken, generation);
+  }
+
+  Future<AuthenticatedAccess> refreshAuthenticatedAccess(
+    AuthService authService,
+    int expectedGeneration,
+  ) async {
+    if (!isCurrentGeneration(expectedGeneration)) {
+      throw const AuthSessionAccessException();
+    }
+    try {
+      final tokens = await refresh(authService);
+      if (!isCurrentGeneration(expectedGeneration)) {
+        throw const AuthSessionAccessException();
+      }
+      return AuthenticatedAccess(tokens.accessToken, expectedGeneration);
+    } on RefreshException catch (error) {
+      if (error.isPermanent) {
+        await _clearAndRequireLogin(error.message, expectedGeneration);
+      }
+      rethrow;
+    }
+  }
 
   @override
   void notifyListeners() {
@@ -461,4 +519,15 @@ class LogoutResult {
 
 class _StaleSessionException implements Exception {
   const _StaleSessionException();
+}
+
+class AuthenticatedAccess {
+  const AuthenticatedAccess(this.accessToken, this.generation);
+
+  final String accessToken;
+  final int generation;
+}
+
+class AuthSessionAccessException implements Exception {
+  const AuthSessionAccessException();
 }
