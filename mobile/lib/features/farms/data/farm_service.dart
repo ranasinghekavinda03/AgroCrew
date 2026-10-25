@@ -87,6 +87,66 @@ class FarmService {
     }
   }
 
+  Future<Farm> updateFarm(int farmId, FarmUpdate request) async {
+    if (farmId <= 0) {
+      throw const FarmException(
+        FarmFailureType.validation,
+        'The farm ID is invalid.',
+      );
+    }
+    final access = await _access();
+    try {
+      final response = await apiClient.putJsonWithHeaders(
+        ApiConfig.endpoint('/api/v1/farms/$farmId'),
+        request.toJson(),
+        headers: _authorization(access.accessToken),
+      );
+      _ensureCurrent(access.generation);
+      if (response.statusCode != 200) {
+        throw _statusException(response.statusCode);
+      }
+      return _parseFarm(response.body);
+    } on ApiException catch (error) {
+      if (error.kind == ApiErrorKind.network ||
+          error.kind == ApiErrorKind.timeout) {
+        throw const FarmException(
+          FarmFailureType.ambiguousUpdate,
+          'The update result could not be confirmed. Reload Farm Details before trying again.',
+        );
+      }
+      throw _transportException(error);
+    }
+  }
+
+  Future<void> deleteFarm(int farmId) async {
+    if (farmId <= 0) {
+      throw const FarmException(
+        FarmFailureType.validation,
+        'The farm ID is invalid.',
+      );
+    }
+    final access = await _access();
+    try {
+      final response = await apiClient.deleteWithHeaders(
+        ApiConfig.endpoint('/api/v1/farms/$farmId'),
+        headers: _authorization(access.accessToken),
+      );
+      _ensureCurrent(access.generation);
+      if (response.statusCode != 204) {
+        throw _statusException(response.statusCode);
+      }
+    } on ApiException catch (error) {
+      if (error.kind == ApiErrorKind.network ||
+          error.kind == ApiErrorKind.timeout) {
+        throw const FarmException(
+          FarmFailureType.ambiguousDeletion,
+          'The deletion result could not be confirmed. Refresh My Farms before trying again.',
+        );
+      }
+      throw _transportException(error);
+    }
+  }
+
   Future<ApiDecodedResponse> _authenticatedGet(Uri uri) async {
     var access = await _access();
     try {
@@ -202,6 +262,10 @@ class FarmService {
       'Your session has expired. Please log in again.',
     ),
     404 => const FarmException(FarmFailureType.notFound, 'Farm not found.'),
+    409 => const FarmException(
+      FarmFailureType.conflict,
+      'This farm cannot be deleted because it has related records.',
+    ),
     422 => const FarmException(
       FarmFailureType.validation,
       'Please review the farm information and try again.',
@@ -240,6 +304,9 @@ enum FarmFailureType {
   timeout,
   invalidResponse,
   ambiguousCreation,
+  ambiguousUpdate,
+  ambiguousDeletion,
+  conflict,
   staleSession,
 }
 

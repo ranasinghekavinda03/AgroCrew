@@ -252,6 +252,240 @@ void main() {
       ),
     );
   });
+
+  test(
+    'PUT sends a complete owner-free replacement and parses HTTP 200',
+    () async {
+      final fixture = await _fixture((request) async {
+        expect(request.method, 'PUT');
+        expect(request.url.path, '/api/v1/farms/12');
+        expect(request.headers['authorization'], 'Bearer access-a');
+        expect(jsonDecode(request.body), {
+          'name': 'Organic Farm',
+          'latitude': 6.9,
+          'longitude': null,
+          'area_value': 3.5,
+          'area_unit': 'acres',
+          'notes': null,
+        });
+        expect(request.body, isNot(contains('user_id')));
+        expect(request.body, isNot(contains('created_at')));
+        return http.Response(
+          jsonEncode({..._farmJson(12), 'name': 'Organic Farm'}),
+          200,
+        );
+      });
+      final farm = await fixture.service.updateFarm(
+        12,
+        const FarmUpdate(
+          name: ' Organic Farm ',
+          latitude: 6.9,
+          longitude: null,
+          areaValue: 3.5,
+          areaUnit: ' acres ',
+          notes: null,
+        ),
+      );
+      expect(farm.name, 'Organic Farm');
+    },
+  );
+
+  for (final entry in <int, FarmFailureType>{
+    401: FarmFailureType.unauthorized,
+    404: FarmFailureType.notFound,
+    409: FarmFailureType.conflict,
+    422: FarmFailureType.validation,
+    500: FarmFailureType.server,
+  }.entries) {
+    test('PUT maps HTTP ${entry.key}', () async {
+      final fixture = await _fixture(
+        (_) async => http.Response('{"detail":"safe"}', entry.key),
+      );
+      await expectLater(
+        fixture.service.updateFarm(
+          7,
+          const FarmUpdate(
+            name: 'Farm',
+            latitude: null,
+            longitude: null,
+            areaValue: null,
+            areaUnit: null,
+            notes: null,
+          ),
+        ),
+        throwsA(
+          isA<FarmException>().having((e) => e.type, 'type', entry.value),
+        ),
+      );
+    });
+  }
+
+  test('DELETE accepts an empty HTTP 204 response', () async {
+    var calls = 0;
+    final fixture = await _fixture((request) async {
+      calls += 1;
+      expect(request.method, 'DELETE');
+      expect(request.url.path, '/api/v1/farms/4');
+      expect(request.headers['authorization'], 'Bearer access-a');
+      return http.Response('', 204);
+    });
+    await fixture.service.deleteFarm(4);
+    expect(calls, 1);
+  });
+
+  test('DELETE maps conflict without claiming success', () async {
+    final fixture = await _fixture(
+      (_) async => http.Response('{"detail":"private"}', 409),
+    );
+    await expectLater(
+      fixture.service.deleteFarm(4),
+      throwsA(
+        isA<FarmException>()
+            .having((e) => e.type, 'type', FarmFailureType.conflict)
+            .having(
+              (e) => e.message,
+              'message',
+              'This farm cannot be deleted because it has related records.',
+            ),
+      ),
+    );
+  });
+
+  test('expired token refreshes before PUT and DELETE', () async {
+    var mutationCalls = 0;
+    final now = DateTime.utc(2026, 10, 24, 12);
+    final fixture = await _fixture(
+      (request) async {
+        if (request.url.path.endsWith('/refresh')) return _refreshResponse();
+        mutationCalls += 1;
+        expect(request.headers['authorization'], 'Bearer access-b');
+        if (request.method == 'PUT') {
+          return http.Response(jsonEncode(_farmJson(2)), 200);
+        }
+        return http.Response('', 204);
+      },
+      now: now,
+      accessLifetime: const Duration(seconds: 1),
+    );
+    await fixture.service.updateFarm(
+      2,
+      const FarmUpdate(
+        name: 'Farm',
+        latitude: null,
+        longitude: null,
+        areaValue: null,
+        areaUnit: null,
+        notes: null,
+      ),
+    );
+    await fixture.service.deleteFarm(2);
+    expect(mutationCalls, 2);
+  });
+
+  test('ambiguous PUT and DELETE timeouts are each sent once', () async {
+    var calls = 0;
+    final fixture = await _fixture((_) async {
+      calls += 1;
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      return http.Response('{}', 200);
+    }, timeout: const Duration(milliseconds: 1));
+    await expectLater(
+      fixture.service.updateFarm(
+        3,
+        const FarmUpdate(
+          name: 'Farm',
+          latitude: null,
+          longitude: null,
+          areaValue: null,
+          areaUnit: null,
+          notes: null,
+        ),
+      ),
+      throwsA(
+        isA<FarmException>().having(
+          (e) => e.type,
+          'type',
+          FarmFailureType.ambiguousUpdate,
+        ),
+      ),
+    );
+    await expectLater(
+      fixture.service.deleteFarm(3),
+      throwsA(
+        isA<FarmException>().having(
+          (e) => e.type,
+          'type',
+          FarmFailureType.ambiguousDeletion,
+        ),
+      ),
+    );
+    expect(calls, 2);
+  });
+
+  test('PUT rejects invalid JSON and malformed response objects', () async {
+    var calls = 0;
+    final fixture = await _fixture((_) async {
+      calls += 1;
+      return calls == 1
+          ? http.Response('not-json', 200)
+          : http.Response('{"id":1}', 200);
+    });
+    for (var index = 0; index < 2; index += 1) {
+      await expectLater(
+        fixture.service.updateFarm(
+          1,
+          const FarmUpdate(
+            name: 'Farm',
+            latitude: null,
+            longitude: null,
+            areaValue: null,
+            areaUnit: null,
+            notes: null,
+          ),
+        ),
+        throwsA(
+          isA<FarmException>().having(
+            (e) => e.type,
+            'type',
+            FarmFailureType.invalidResponse,
+          ),
+        ),
+      );
+    }
+  });
+
+  test('logout makes a delayed PUT response stale', () async {
+    final response = Completer<http.Response>();
+    final fixture = await _fixture((request) {
+      if (request.url.path.endsWith('/logout')) {
+        return Future.value(http.Response('', 204));
+      }
+      return response.future;
+    });
+    final pending = fixture.service.updateFarm(
+      1,
+      const FarmUpdate(
+        name: 'Farm',
+        latitude: null,
+        longitude: null,
+        areaValue: null,
+        areaUnit: null,
+        notes: null,
+      ),
+    );
+    await fixture.session.logout(fixture.authService);
+    response.complete(http.Response(jsonEncode(_farmJson(1)), 200));
+    await expectLater(
+      pending,
+      throwsA(
+        isA<FarmException>().having(
+          (e) => e.type,
+          'type',
+          FarmFailureType.staleSession,
+        ),
+      ),
+    );
+  });
 }
 
 Future<_Fixture> _fixture(
