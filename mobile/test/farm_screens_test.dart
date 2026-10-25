@@ -9,6 +9,7 @@ import 'package:agrocrew/features/auth/data/models/login_response.dart';
 import 'package:agrocrew/features/auth/data/models/user_profile.dart';
 import 'package:agrocrew/features/farms/data/farm_service.dart';
 import 'package:agrocrew/features/farms/presentation/add_farm_screen.dart';
+import 'package:agrocrew/features/farms/presentation/edit_farm_screen.dart';
 import 'package:agrocrew/features/farms/presentation/farm_details_screen.dart';
 import 'package:agrocrew/features/farms/presentation/my_farms_screen.dart';
 import 'package:flutter/material.dart';
@@ -213,6 +214,277 @@ void main() {
     await tester.tap(find.byKey(const Key('save-farm-button')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('farm-card-10')), findsOneWidget);
+  });
+
+  testWidgets('Edit Farm loads and prefills every current value', (
+    tester,
+  ) async {
+    final fixture = await _fixture(
+      (_) async => http.Response(jsonEncode(_farm(4)), 200),
+    );
+    await _pump(
+      tester,
+      EditFarmScreen(farmId: 4, farmService: fixture.service),
+    );
+    expect(find.byKey(const Key('edit-farm-loading')), findsOneWidget);
+    await tester.pumpAndSettle();
+    expect(find.text('Update your farming location details.'), findsOneWidget);
+    expect(
+      tester
+          .widget<TextFormField>(find.byKey(const Key('edit-farm-name-field')))
+          .controller!
+          .text,
+      'Green Valley Farm',
+    );
+    expect(
+      tester
+          .widget<TextFormField>(find.byKey(const Key('edit-farm-area-field')))
+          .controller!
+          .text,
+      '2.5',
+    );
+    expect(
+      tester
+          .widget<TextFormField>(find.byKey(const Key('edit-farm-notes-field')))
+          .controller!
+          .text,
+      'Near the river',
+    );
+  });
+
+  testWidgets('editing refreshes Farm Details with the server response', (
+    tester,
+  ) async {
+    final fixture = await _fixture((request) async {
+      if (request.method == 'PUT') {
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        expect(body['name'], 'Green Valley Organic Farm');
+        expect(body['latitude'], 6.927079);
+        expect(body['area_unit'], 'acres');
+        return http.Response(
+          jsonEncode({..._farm(4), 'name': 'Green Valley Organic Farm'}),
+          200,
+        );
+      }
+      return http.Response(jsonEncode(_farm(4)), 200);
+    });
+    await _pump(
+      tester,
+      FarmDetailsScreen(farmId: 4, farmService: fixture.service),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const Key('edit-farm-button')));
+    await tester.tap(find.byKey(const Key('edit-farm-button')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('edit-farm-name-field')),
+      'Green Valley Organic Farm',
+    );
+    await tester.ensureVisible(
+      find.byKey(const Key('save-farm-changes-button')),
+    );
+    await tester.tap(find.byKey(const Key('save-farm-changes-button')));
+    await tester.pumpAndSettle();
+    expect(find.text('Green Valley Organic Farm'), findsOneWidget);
+    expect(find.text('Farm updated successfully.'), findsOneWidget);
+  });
+
+  testWidgets('Edit Farm validates fields and preserves entered values', (
+    tester,
+  ) async {
+    var puts = 0;
+    final fixture = await _fixture((request) async {
+      if (request.method == 'PUT') puts += 1;
+      return http.Response(jsonEncode(_farm(4)), 200);
+    });
+    await _pump(
+      tester,
+      EditFarmScreen(farmId: 4, farmService: fixture.service),
+    );
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('edit-farm-name-field')), ' ');
+    await tester.enterText(find.byKey(const Key('edit-farm-area-field')), '0');
+    await tester.enterText(
+      find.byKey(const Key('edit-farm-latitude-field')),
+      '91',
+    );
+    await tester.enterText(
+      find.byKey(const Key('edit-farm-longitude-field')),
+      '-181',
+    );
+    await tester.ensureVisible(
+      find.byKey(const Key('save-farm-changes-button')),
+    );
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.byKey(const Key('save-farm-changes-button')),
+          )
+          .onPressed,
+      isNull,
+    );
+    await tester.enterText(
+      find.byKey(const Key('edit-farm-name-field')),
+      'Still Entered',
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('save-farm-changes-button')));
+    await tester.pump();
+    expect(find.text('Area must be greater than zero.'), findsOneWidget);
+    expect(find.textContaining('Latitude must be between'), findsOneWidget);
+    expect(find.textContaining('Longitude must be between'), findsOneWidget);
+    expect(
+      tester
+          .widget<TextFormField>(find.byKey(const Key('edit-farm-name-field')))
+          .controller!
+          .text,
+      'Still Entered',
+    );
+    expect(puts, 0);
+  });
+
+  testWidgets('Edit Farm prevents duplicate Save while PUT is pending', (
+    tester,
+  ) async {
+    final response = Completer<http.Response>();
+    var puts = 0;
+    final fixture = await _fixture((request) async {
+      if (request.method == 'PUT') {
+        puts += 1;
+        return response.future;
+      }
+      return http.Response(jsonEncode(_farm(4)), 200);
+    });
+    await _pump(
+      tester,
+      EditFarmScreen(farmId: 4, farmService: fixture.service),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(
+      find.byKey(const Key('save-farm-changes-button')),
+    );
+    await tester.tap(find.byKey(const Key('save-farm-changes-button')));
+    await tester.pump();
+    expect(find.text('Saving...'), findsOneWidget);
+    expect(puts, 1);
+    response.complete(http.Response(jsonEncode(_farm(4)), 200));
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('delete confirmation Cancel sends no DELETE', (tester) async {
+    var deletes = 0;
+    final fixture = await _fixture((request) async {
+      if (request.method == 'DELETE') deletes += 1;
+      return http.Response(jsonEncode(_farm(4)), 200);
+    });
+    await _pump(
+      tester,
+      FarmDetailsScreen(farmId: 4, farmService: fixture.service),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const Key('delete-farm-button')));
+    await tester.tap(find.byKey(const Key('delete-farm-button')));
+    await tester.pumpAndSettle();
+    expect(find.text('Delete Farm?'), findsOneWidget);
+    expect(find.textContaining('"Green Valley Farm"'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('delete-farm-cancel')));
+    await tester.pumpAndSettle();
+    expect(deletes, 0);
+    expect(find.byType(FarmDetailsScreen), findsOneWidget);
+  });
+
+  testWidgets('confirmed deletion removes only that farm and refreshes list', (
+    tester,
+  ) async {
+    var listCalls = 0;
+    var deletes = 0;
+    final fixture = await _fixture((request) async {
+      if (request.method == 'DELETE') {
+        deletes += 1;
+        return http.Response('', 204);
+      }
+      if (request.url.path == '/api/v1/farms') {
+        listCalls += 1;
+        return http.Response(
+          jsonEncode(
+            listCalls == 1
+                ? [
+                    _farm(4),
+                    {..._farm(5), 'name': 'Hill Farm'},
+                  ]
+                : [
+                    {..._farm(5), 'name': 'Hill Farm'},
+                  ],
+          ),
+          200,
+        );
+      }
+      return http.Response(jsonEncode(_farm(4)), 200);
+    });
+    await _pumpFarms(tester, fixture);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('farm-card-4')));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const Key('delete-farm-button')));
+    await tester.tap(find.byKey(const Key('delete-farm-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('delete-farm-confirm')));
+    await tester.pumpAndSettle();
+    expect(deletes, 1);
+    expect(find.byKey(const Key('farm-card-4')), findsNothing);
+    expect(find.text('Hill Farm'), findsOneWidget);
+    expect(find.text('Farm deleted successfully.'), findsOneWidget);
+    expect(fixture.session.state, AuthSessionState.authenticated);
+  });
+
+  testWidgets('delete conflict keeps Farm Details visible', (tester) async {
+    final fixture = await _fixture((request) async {
+      if (request.method == 'DELETE') {
+        return http.Response('{"detail":"constraint"}', 409);
+      }
+      return http.Response(jsonEncode(_farm(4)), 200);
+    });
+    await _pump(
+      tester,
+      FarmDetailsScreen(farmId: 4, farmService: fixture.service),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const Key('delete-farm-button')));
+    await tester.tap(find.byKey(const Key('delete-farm-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('delete-farm-confirm')));
+    await tester.pumpAndSettle();
+    expect(find.byType(FarmDetailsScreen), findsOneWidget);
+    expect(
+      find.text('This farm cannot be deleted because it has related records.'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('confirmed deletion cannot be submitted twice', (tester) async {
+    final response = Completer<http.Response>();
+    var deletes = 0;
+    final fixture = await _fixture((request) async {
+      if (request.method == 'DELETE') {
+        deletes += 1;
+        return response.future;
+      }
+      return http.Response(jsonEncode(_farm(4)), 200);
+    });
+    await _pump(
+      tester,
+      FarmDetailsScreen(farmId: 4, farmService: fixture.service),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const Key('delete-farm-button')));
+    await tester.tap(find.byKey(const Key('delete-farm-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('delete-farm-confirm')));
+    await tester.pump();
+    expect(find.text('Deleting...'), findsOneWidget);
+    expect(deletes, 1);
+    response.complete(http.Response('', 204));
+    await tester.pumpAndSettle();
   });
 
   testWidgets('logout clears a protected farm screen', (tester) async {

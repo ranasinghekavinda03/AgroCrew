@@ -127,6 +127,21 @@ class _MyFarmsScreenState extends State<MyFarmsScreen> {
     await _load(refresh: true);
   }
 
+  Future<void> _openDetails(Farm farm) async {
+    final deleted = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) =>
+            FarmDetailsScreen(farmId: farm.id, farmService: widget.farmService),
+      ),
+    );
+    if (!mounted) return;
+    await _load(refresh: true);
+    if (!mounted || deleted != true) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Farm deleted successfully.')));
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
@@ -226,14 +241,7 @@ class _MyFarmsScreenState extends State<MyFarmsScreen> {
           }
           return _FarmCard(
             farm: _farms[index],
-            onTap: () => Navigator.of(context).push<void>(
-              MaterialPageRoute(
-                builder: (_) => FarmDetailsScreen(
-                  farmId: _farms[index].id,
-                  farmService: widget.farmService,
-                ),
-              ),
-            ),
+            onTap: () => _openDetails(_farms[index]),
           );
         },
       ),

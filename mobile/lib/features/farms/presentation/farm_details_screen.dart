@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../data/farm_service.dart';
 import '../data/models/farm.dart';
+import 'edit_farm_screen.dart';
 
 class FarmDetailsScreen extends StatefulWidget {
   const FarmDetailsScreen({
@@ -21,6 +22,7 @@ class _FarmDetailsScreenState extends State<FarmDetailsScreen> {
   Farm? _farm;
   String? _error;
   bool _loading = true;
+  bool _deleting = false;
 
   @override
   void initState() {
@@ -46,6 +48,62 @@ class _FarmDetailsScreenState extends State<FarmDetailsScreen> {
         _loading = false;
         _error = error.message;
       });
+    }
+  }
+
+  Future<void> _edit() async {
+    final updated = await Navigator.of(context).push<Farm>(
+      MaterialPageRoute(
+        builder: (_) => EditFarmScreen(
+          farmId: widget.farmId,
+          farmService: widget.farmService,
+        ),
+      ),
+    );
+    if (!mounted || updated == null) return;
+    setState(() => _farm = updated);
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Farm updated successfully.')));
+  }
+
+  Future<void> _confirmDelete() async {
+    if (_deleting || _farm == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Farm?'),
+        content: Text(
+          'Are you sure you want to delete "${_farm!.name}"? This action cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            key: const Key('delete-farm-cancel'),
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('delete-farm-confirm'),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Delete Farm'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted || _deleting) return;
+    setState(() => _deleting = true);
+    try {
+      await widget.farmService.deleteFarm(widget.farmId);
+      if (mounted) Navigator.of(context).pop(true);
+    } on FarmException catch (error) {
+      if (!mounted) return;
+      setState(() => _deleting = false);
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(error.message)));
     }
   }
 
@@ -124,6 +182,29 @@ class _FarmDetailsScreenState extends State<FarmDetailsScreen> {
               ),
               _row('Created', _date(farm.createdAt)),
               _row('Last updated', _date(farm.updatedAt)),
+              const SizedBox(height: 10),
+              FilledButton.icon(
+                key: const Key('edit-farm-button'),
+                onPressed: _deleting ? null : _edit,
+                icon: const Icon(Icons.edit_outlined),
+                label: const Text('Edit Farm'),
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                key: const Key('delete-farm-button'),
+                onPressed: _deleting ? null : _confirmDelete,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Theme.of(context).colorScheme.error,
+                  side: BorderSide(color: Theme.of(context).colorScheme.error),
+                ),
+                icon: _deleting
+                    ? const SizedBox.square(
+                        dimension: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.delete_outline),
+                label: Text(_deleting ? 'Deleting...' : 'Delete Farm'),
+              ),
             ],
           ),
         ),
