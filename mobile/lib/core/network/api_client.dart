@@ -85,11 +85,35 @@ class ApiClient {
     ),
   );
 
+  Future<ApiDecodedResponse> putJsonWithHeaders(
+    Uri uri,
+    Map<String, Object?> body, {
+    Map<String, String>? headers,
+  }) => _decodedRequest(
+    () => _client.put(
+      uri,
+      headers: {'Content-Type': 'application/json', ...?headers},
+      body: jsonEncode(body),
+    ),
+  );
+
+  Future<ApiDecodedResponse> deleteWithHeaders(
+    Uri uri, {
+    Map<String, String>? headers,
+  }) => _decodedRequest(
+    () => _client.delete(uri, headers: headers),
+    allowEmptyBody: true,
+  );
+
   Future<ApiDecodedResponse> _decodedRequest(
-    Future<http.Response> Function() send,
-  ) async {
+    Future<http.Response> Function() send, {
+    bool allowEmptyBody = false,
+  }) async {
     try {
       final response = await send().timeout(timeout);
+      if (allowEmptyBody && response.body.trim().isEmpty) {
+        return ApiDecodedResponse(statusCode: response.statusCode, body: null);
+      }
       final Object? decoded;
       try {
         decoded = jsonDecode(response.body);

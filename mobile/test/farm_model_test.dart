@@ -79,4 +79,25 @@ void main() {
     });
     expect(request.toJson(), isNot(contains('user_id')));
   });
+
+  test('update payload is a complete replacement with explicit nulls', () {
+    const request = FarmUpdate(
+      name: '  Hill Farm  ',
+      latitude: null,
+      longitude: 79.8,
+      areaValue: null,
+      areaUnit: null,
+      notes: null,
+    );
+    expect(request.toJson(), {
+      'name': 'Hill Farm',
+      'latitude': null,
+      'longitude': 79.8,
+      'area_value': null,
+      'area_unit': null,
+      'notes': null,
+    });
+    expect(request.toJson(), isNot(contains('user_id')));
+    expect(request.toJson(), isNot(contains('created_at')));
+  });
 }

@@ -98,3 +98,30 @@ class FarmCreate {
     if (notes != null) 'notes': notes,
   };
 }
+
+class FarmUpdate {
+  const FarmUpdate({
+    required this.name,
+    required this.latitude,
+    required this.longitude,
+    required this.areaValue,
+    required this.areaUnit,
+    required this.notes,
+  });
+
+  final String name;
+  final num? latitude;
+  final num? longitude;
+  final num? areaValue;
+  final String? areaUnit;
+  final String? notes;
+
+  Map<String, Object?> toJson() => {
+    'name': name.trim(),
+    'latitude': latitude,
+    'longitude': longitude,
+    'area_value': areaValue,
+    'area_unit': areaUnit?.trim(),
+    'notes': notes,
+  };
+}
