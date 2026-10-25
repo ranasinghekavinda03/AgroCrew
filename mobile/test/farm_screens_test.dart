@@ -27,6 +27,7 @@ void main() {
     response.complete(http.Response('[]', 200));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('farms-empty')), findsOneWidget);
+    expect(find.text('Manage your farming locations.'), findsOneWidget);
     expect(find.text("You haven't added any farms yet."), findsOneWidget);
   });
 

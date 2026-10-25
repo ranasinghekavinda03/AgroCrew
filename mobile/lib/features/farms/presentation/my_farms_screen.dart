@@ -131,6 +131,16 @@ class _MyFarmsScreenState extends State<MyFarmsScreen> {
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
       title: const Text('My Farms'),
+      bottom: const PreferredSize(
+        preferredSize: Size.fromHeight(32),
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Text('Manage your farming locations.'),
+          ),
+        ),
+      ),
       actions: [
         IconButton(
           key: const Key('farms-refresh'),
