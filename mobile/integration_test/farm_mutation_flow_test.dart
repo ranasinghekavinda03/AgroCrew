@@ -21,7 +21,7 @@ void main() {
   ) async {
     expect(_emailA, isNotEmpty);
     expect(_emailB, isNotEmpty);
-    expect(_phase, anyOf('prepare', 'verify'));
+    expect(_phase, anyOf('prepare', 'verify', 'verify-login'));
     final apiClient = ApiClient();
     final authService = AuthService(apiClient);
 
@@ -38,6 +38,8 @@ void main() {
           email: _emailB,
           password: _password,
         );
+      } else if (_phase == 'verify-login') {
+        await createAuthTokenStore().clearSession();
       }
 
       app.main();
@@ -139,6 +141,9 @@ void main() {
         await _login(tester, _emailA);
         expect(find.text('Hello, Step 23 Android Farmer A'), findsOneWidget);
       } else {
+        if (_phase == 'verify-login') {
+          await _login(tester, _emailA);
+        }
         expect(find.text('Hello, Step 23 Android Farmer A'), findsOneWidget);
         await _openMyFarms(tester);
         expect(find.text('Green Valley Organic Farm'), findsOneWidget);
