@@ -87,6 +87,10 @@ class _VerificationAppState extends State<_VerificationApp> {
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: _result,
-    home: Scaffold(body: Center(child: Text(_result))),
+    home: Title(
+      title: _result,
+      color: Colors.white,
+      child: Scaffold(body: Center(child: Text(_result))),
+    ),
   );
 }
