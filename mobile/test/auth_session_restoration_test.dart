@@ -55,7 +55,8 @@ void main() {
       final store = FakeTokenStore(session: _expiredSession());
       var refreshRequests = 0;
       var profileRequests = 0;
-      final session = AuthSession(tokenStore: store);
+      final now = DateTime.utc(2026, 10, 21, 12);
+      final session = AuthSession(tokenStore: store, clock: () => now);
       await session.restore(
         _service((request) async {
           if (request.url.path.endsWith('/refresh')) {
@@ -69,7 +70,7 @@ void main() {
           expect(request.headers['authorization'], 'Bearer rotated-access');
           return _profileResponse();
         }),
-        now: DateTime.utc(2026, 10, 21, 12),
+        now: now,
       );
 
       expect(refreshRequests, 1);
