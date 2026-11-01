@@ -8,6 +8,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 
 if TYPE_CHECKING:
+    from app.db.models.crop_cycle import CropCycle
     from app.db.models.user import User
 
 
@@ -63,3 +64,8 @@ class Farm(Base):
 
     # Farms are owner-dependent records; the database cascade prevents orphans.
     owner: Mapped["User"] = relationship(back_populates="farms")
+    # Crop history is protected: deleting a Farm must be rejected by its FK.
+    crop_cycles: Mapped[list["CropCycle"]] = relationship(
+        back_populates="farm",
+        passive_deletes="all",
+    )
