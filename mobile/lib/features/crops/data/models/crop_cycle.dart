@@ -72,11 +72,12 @@ class CropCycle {
     final cropType = value['crop_type'];
     if (cropType is! String ||
         cropType.trim().isEmpty ||
-        cropType.length > 128) {
+        cropType.runes.length > 128) {
       throw const FormatException('crop_type is invalid.');
     }
     final variety = _nullableString(value['variety'], 'variety');
-    if (variety != null && (variety.trim().isEmpty || variety.length > 128)) {
+    if (variety != null &&
+        (variety.trim().isEmpty || variety.runes.length > 128)) {
       throw const FormatException('variety is invalid.');
     }
     final plantingDate = _CropDateOnly.parse(
@@ -97,7 +98,7 @@ class CropCycle {
         ? null
         : _positiveInteger(value['plant_count'], 'plant_count');
     final notes = _nullableString(value['notes'], 'notes');
-    if (notes != null && notes.length > 10000) {
+    if (notes != null && notes.runes.length > 10000) {
       throw const FormatException('notes is invalid.');
     }
 
@@ -117,7 +118,11 @@ class CropCycle {
   }
 
   static int _positiveInteger(Object? value, String field) {
-    if (value is int && value > 0) return value;
+    // On JavaScript targets, a whole-valued double can also satisfy `is int`
+    // after JSON decoding. Lexical `1` versus `1.0` information is no longer
+    // available at this layer. The finite check is still required because
+    // JavaScript targets can also report infinity as an int.
+    if (value is int && value.isFinite && value > 0) return value;
     throw FormatException('$field is invalid.');
   }
 
@@ -129,10 +134,42 @@ class CropCycle {
 
   static DateTime _timestamp(Object? value, String field) {
     if (value is! String) throw FormatException('$field is invalid.');
-    final parsed = DateTime.tryParse(value);
+    final match = _timestampPattern.firstMatch(value);
+    if (match == null || match.start != 0 || match.end != value.length) {
+      throw FormatException('$field is invalid.');
+    }
+    final year = int.parse(match.group(1)!);
+    final month = int.parse(match.group(2)!);
+    final day = int.parse(match.group(3)!);
+    final hour = int.parse(match.group(4)!);
+    final minute = int.parse(match.group(5)!);
+    final second = int.parse(match.group(6)!);
+    if (year < 1 ||
+        year > 9999 ||
+        !_isValidCalendarDate(year, month, day) ||
+        hour > 23 ||
+        minute > 59 ||
+        second > 59) {
+      throw FormatException('$field is invalid.');
+    }
+    final offsetHour = match.group(8);
+    final offsetMinute = match.group(9);
+    if (offsetHour != null &&
+        (int.parse(offsetHour) > 23 || int.parse(offsetMinute!) > 59)) {
+      throw FormatException('$field is invalid.');
+    }
+    // SQLite test data can be timezone-naive while PostgreSQL/Pydantic emits
+    // Z or an explicit offset. Naive server timestamps represent UTC here.
+    final normalized = match.group(7) == null ? '${value}Z' : value;
+    final parsed = DateTime.tryParse(normalized);
     if (parsed == null) throw FormatException('$field is invalid.');
     return parsed.toUtc();
   }
+
+  static final _timestampPattern = RegExp(
+    r'^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})'
+    r'(?:\.\d{1,6})?(Z|[+-](\d{2}):(\d{2}))?$',
+  );
 }
 
 class CropCycleCreate {
@@ -215,20 +252,20 @@ abstract final class _CropDateOnly {
   static final _pattern = RegExp(r'^(\d{4})-(\d{2})-(\d{2})$');
 
   static DateTime parse(Object? value, String field) {
-    if (value is! String) throw FormatException('$field is invalid.');
+    if (value is! String || value.length != 10) {
+      throw FormatException('$field is invalid.');
+    }
     final match = _pattern.firstMatch(value);
-    if (match == null) throw FormatException('$field is invalid.');
+    if (match == null || match.start != 0 || match.end != value.length) {
+      throw FormatException('$field is invalid.');
+    }
     final year = int.parse(match.group(1)!);
     final month = int.parse(match.group(2)!);
     final day = int.parse(match.group(3)!);
-    if (year < 1 || year > 9999) {
+    if (year < 1 || year > 9999 || !_isValidCalendarDate(year, month, day)) {
       throw FormatException('$field is invalid.');
     }
-    final parsed = DateTime.utc(year, month, day);
-    if (parsed.year != year || parsed.month != month || parsed.day != day) {
-      throw FormatException('$field is invalid.');
-    }
-    return parsed;
+    return DateTime.utc(year, month, day);
   }
 
   static String format(DateTime value) {
@@ -239,4 +276,9 @@ abstract final class _CropDateOnly {
         component.toString().padLeft(width, '0');
     return '${pad(value.year, 4)}-${pad(value.month, 2)}-${pad(value.day, 2)}';
   }
+}
+
+bool _isValidCalendarDate(int year, int month, int day) {
+  final parsed = DateTime.utc(year, month, day);
+  return parsed.year == year && parsed.month == month && parsed.day == day;
 }

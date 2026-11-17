@@ -45,6 +45,79 @@ void main() {
     expect(crop.notes, isNull);
   });
 
+  test('accepts ASCII text at each backend length boundary', () {
+    final crop = CropCycle.fromJson({
+      ...complete,
+      'crop_type': 'c' * 128,
+      'variety': 'v' * 128,
+      'notes': 'n' * 10000,
+    });
+    expect(crop.cropType.runes.length, 128);
+    expect(crop.variety!.runes.length, 128);
+    expect(crop.notes!.runes.length, 10000);
+  });
+
+  test('rejects ASCII text above each backend length boundary', () {
+    for (final invalid in [
+      <String, Object?>{'crop_type': 'c' * 129},
+      <String, Object?>{'variety': 'v' * 129},
+      <String, Object?>{'notes': 'n' * 10001},
+    ]) {
+      expect(
+        () => CropCycle.fromJson({...complete, ...invalid}),
+        throwsFormatException,
+      );
+    }
+  });
+
+  test('counts supplementary-plane text as Unicode code points', () {
+    const plant = '\u{1F331}';
+    final crop = CropCycle.fromJson({
+      ...complete,
+      'crop_type': _repeat(plant, 128),
+      'variety': _repeat(plant, 128),
+      'notes': _repeat(plant, 10000),
+    });
+    expect(crop.cropType.runes.length, 128);
+    expect(crop.cropType.length, 256);
+    expect(crop.variety!.runes.length, 128);
+    expect(crop.notes!.runes.length, 10000);
+  });
+
+  test('rejects Unicode text above backend code-point limits', () {
+    const plant = '\u{1F331}';
+    for (final invalid in [
+      <String, Object?>{'crop_type': _repeat(plant, 129)},
+      <String, Object?>{'variety': _repeat(plant, 129)},
+      <String, Object?>{'notes': _repeat(plant, 10001)},
+    ]) {
+      expect(
+        () => CropCycle.fromJson({...complete, ...invalid}),
+        throwsFormatException,
+      );
+    }
+  });
+
+  test('preserves valid multilingual text and nullable text fields', () {
+    final multilingual = CropCycle.fromJson({
+      ...complete,
+      'crop_type': 'තක්කාලි',
+      'variety': 'දේශීය',
+      'notes': 'සිංහල தமிழ் English',
+    });
+    expect(multilingual.cropType, 'තක්කාලි');
+    expect(multilingual.variety, 'දේශීය');
+    expect(multilingual.notes, 'සිංහල தமிழ் English');
+
+    final nullable = CropCycle.fromJson({
+      ...complete,
+      'variety': null,
+      'notes': null,
+    });
+    expect(nullable.variety, isNull);
+    expect(nullable.notes, isNull);
+  });
+
   for (final status in CropStatus.values) {
     test('deserializes and serializes ${status.name}', () {
       final crop = CropCycle.fromJson({...complete, 'status': status.name});
@@ -75,7 +148,11 @@ void main() {
 
   for (final invalid in [
     <String, Object?>{'id': 0},
-    <String, Object?>{'id': 1.0},
+    <String, Object?>{'id': 1.5},
+    <String, Object?>{'id': true},
+    <String, Object?>{'id': double.nan},
+    <String, Object?>{'id': double.infinity},
+    <String, Object?>{'id': double.negativeInfinity},
     <String, Object?>{'farm_id': -1},
     <String, Object?>{'farm_id': '12'},
     <String, Object?>{'crop_type': '   '},
@@ -84,7 +161,8 @@ void main() {
     <String, Object?>{'variety': ''},
     <String, Object?>{'plant_count': 0},
     <String, Object?>{'plant_count': -1},
-    <String, Object?>{'plant_count': 12.0},
+    <String, Object?>{'plant_count': 12.25},
+    <String, Object?>{'plant_count': '12'},
     <String, Object?>{'notes': 42},
     <String, Object?>{'notes': 'x' * 10001},
     <String, Object?>{'created_at': 'not-a-timestamp'},
@@ -93,6 +171,61 @@ void main() {
     test('rejects malformed response field ${invalid.keys.single}', () {
       expect(
         () => CropCycle.fromJson({...complete, ...invalid}),
+        throwsFormatException,
+      );
+    });
+  }
+
+  test('whole-valued doubles follow the target number representation', () {
+    const Object wholeValuedDouble = 1.0;
+    if (wholeValuedDouble is int) {
+      expect(CropCycle.fromJson({...complete, 'id': wholeValuedDouble}).id, 1);
+    } else {
+      expect(
+        () => CropCycle.fromJson({...complete, 'id': wholeValuedDouble}),
+        throwsFormatException,
+      );
+    }
+  });
+
+  test('accepts verified backend timestamp representations', () {
+    final utc = CropCycle.fromJson({
+      ...complete,
+      'created_at': '2026-11-17T10:30:12.345678Z',
+    });
+    expect(utc.createdAt, DateTime.utc(2026, 11, 17, 10, 30, 12, 345, 678));
+
+    final offset = CropCycle.fromJson({
+      ...complete,
+      'created_at': '2026-11-17T10:30:12.5+05:30',
+    });
+    expect(offset.createdAt, DateTime.utc(2026, 11, 17, 5, 0, 12, 500));
+
+    final sqliteNaive = CropCycle.fromJson({
+      ...complete,
+      'created_at': '2026-11-17T10:30:12',
+    });
+    expect(sqliteNaive.createdAt, DateTime.utc(2026, 11, 17, 10, 30, 12));
+  });
+
+  for (final entry in {
+    'date only': '2026-11-17',
+    'space separator': '2026-11-17 10:30:00Z',
+    'impossible date': '2026-02-30T10:30:00Z',
+    'invalid month': '2026-13-01T10:30:00Z',
+    'invalid hour': '2026-11-17T24:00:00Z',
+    'invalid minute': '2026-11-17T10:60:00Z',
+    'invalid second': '2026-11-17T10:30:60Z',
+    'missing seconds': '2026-11-17T10:30Z',
+    'invalid offset hour': '2026-11-17T10:30:00+24:00',
+    'invalid offset minute': '2026-11-17T10:30:00+05:60',
+    'invalid offset shape': '2026-11-17T10:30:00+0530',
+    'excess fractional precision': '2026-11-17T10:30:00.1234567Z',
+    'trailing newline': '2026-11-17T10:30:00Z\n',
+  }.entries) {
+    test('rejects timestamp with ${entry.key}', () {
+      expect(
+        () => CropCycle.fromJson({...complete, 'created_at': entry.value}),
         throwsFormatException,
       );
     });
@@ -151,6 +284,21 @@ void main() {
     test('rejects invalid date-only value $invalidDate', () {
       expect(
         () => CropCycle.fromJson({...complete, 'planting_date': invalidDate}),
+        throwsFormatException,
+      );
+    });
+  }
+
+  for (final entry in {
+    'leading whitespace': ' 2026-11-17',
+    'trailing whitespace': '2026-11-17 ',
+    'trailing newline': '2026-11-17\n',
+    'unexpected suffix': '2026-11-17x',
+    'short input': '2026-11-1',
+  }.entries) {
+    test('rejects date-only input with ${entry.key}', () {
+      expect(
+        () => CropCycle.fromJson({...complete, 'planting_date': entry.value}),
         throwsFormatException,
       );
     });
@@ -359,3 +507,5 @@ void main() {
     }
   });
 }
+
+String _repeat(String value, int count) => List.filled(count, value).join();
