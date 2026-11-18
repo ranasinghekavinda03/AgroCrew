@@ -302,6 +302,56 @@ void main() {
   );
 
   test(
+    'account replacement blocks protected access while storage is pending',
+    () async {
+      final store = _Store();
+      final session = AuthSession(tokenStore: store, clock: () => now);
+      await session.establishVerified(
+        _tokens(now, accessMinutes: 10),
+        _profile(),
+      );
+      final saveStarted = Completer<void>();
+      final saveGate = Completer<void>();
+      store.saveStarted = saveStarted;
+      store.saveGate = saveGate;
+      final newer = LoginResponse(
+        accessToken: 'account-b-access',
+        refreshToken: 'account-b-refresh',
+        issuedAt: now,
+        expiresIn: const Duration(minutes: 30),
+        refreshExpiresIn: const Duration(days: 7),
+      );
+
+      final replacement = session.establishVerified(newer, _profile());
+      await saveStarted.future;
+      expect(session.state, AuthSessionState.restoring);
+      expect(session.hasTokens, isFalse);
+      expect(session.profile, isNull);
+
+      var protectedCalls = 0;
+      final service = _service(now, (_) async {
+        protectedCalls += 1;
+        return _profileResponse();
+      });
+      await expectLater(
+        session.authenticatedAccess(service),
+        throwsA(anything),
+      );
+      expect(protectedCalls, 0);
+
+      saveGate.complete();
+      await replacement;
+      expect(session.state, AuthSessionState.authenticated);
+      expect(session.accessToken, 'account-b-access');
+      expect(
+        (await session.authenticatedAccess(service)).accessToken,
+        'account-b-access',
+      );
+      expect(protectedCalls, 0);
+    },
+  );
+
+  test(
     'rotation storage failure clears obsolete pair and fails closed',
     () async {
       final store = _Store(session: _tokens(now))..failSave = true;
@@ -374,6 +424,8 @@ class _Store implements AuthTokenStore {
   int saveCount = 0;
   int clearCount = 0;
   bool failSave = false;
+  Completer<void>? saveStarted;
+  Completer<void>? saveGate;
 
   @override
   Future<LoginResponse?> readSession() async => session;
@@ -381,6 +433,9 @@ class _Store implements AuthTokenStore {
   @override
   Future<void> saveSession(LoginResponse value) async {
     saveCount += 1;
+    saveStarted?.complete();
+    final gate = saveGate;
+    if (gate != null) await gate.future;
     if (failSave) {
       throw const AuthTokenStoreException('Secure storage unavailable.');
     }

@@ -129,7 +129,12 @@ class AuthSession extends ChangeNotifier {
         'Sign-out must finish before a new session can be saved.',
       );
     }
-    _generation += 1;
+    final generation = ++_generation;
+    _tokens = null;
+    _profile = null;
+    _state = AuthSessionState.restoring;
+    _message = 'Securing your session...';
+    notifyListeners();
     final refresh = _refreshOperation;
     if (refresh != null) {
       try {
@@ -138,7 +143,20 @@ class AuthSession extends ChangeNotifier {
         // A new verified login supersedes any older refresh result.
       }
     }
-    await _tokenStore.saveSession(response);
+    try {
+      await _tokenStore.saveSession(response);
+    } on AuthTokenStoreException {
+      if (generation == _generation) {
+        _state = AuthSessionState.unauthenticated;
+        _message =
+            'Your session could not be stored securely. Please try again.';
+        notifyListeners();
+      }
+      rethrow;
+    }
+    if (generation != _generation || _logoutRequested) {
+      throw const AuthSessionAccessException();
+    }
     _tokens = response;
     _profile = profile;
     _state = AuthSessionState.authenticated;
