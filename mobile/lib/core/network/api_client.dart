@@ -29,6 +29,7 @@ class ApiClient {
         throw ApiException(
           'The backend returned HTTP ${response.statusCode}.',
           kind: ApiErrorKind.http,
+          statusCode: response.statusCode,
         );
       }
 
@@ -40,13 +41,15 @@ class ApiClient {
           'The backend returned invalid JSON.',
           cause: error,
           kind: ApiErrorKind.invalidResponse,
+          statusCode: response.statusCode,
         );
       }
 
       if (decoded is! Map<String, dynamic>) {
-        throw const ApiException(
+        throw ApiException(
           'The backend returned an unexpected response.',
           kind: ApiErrorKind.invalidResponse,
+          statusCode: response.statusCode,
         );
       }
 
@@ -122,6 +125,7 @@ class ApiClient {
           'The backend returned invalid JSON.',
           cause: error,
           kind: ApiErrorKind.invalidResponse,
+          statusCode: response.statusCode,
         );
       }
       return ApiDecodedResponse(statusCode: response.statusCode, body: decoded);
@@ -181,13 +185,15 @@ class ApiClient {
           'The backend returned invalid JSON.',
           cause: error,
           kind: ApiErrorKind.invalidResponse,
+          statusCode: response.statusCode,
         );
       }
 
       if (decoded is! Map<String, dynamic>) {
-        throw const ApiException(
+        throw ApiException(
           'The backend returned an unexpected response.',
           kind: ApiErrorKind.invalidResponse,
+          statusCode: response.statusCode,
         );
       }
 
@@ -233,11 +239,13 @@ class ApiException implements Exception {
     this.message, {
     this.cause,
     this.kind = ApiErrorKind.invalidResponse,
+    this.statusCode,
   });
 
   final String message;
   final Object? cause;
   final ApiErrorKind kind;
+  final int? statusCode;
 
   @override
   String toString() => message;
