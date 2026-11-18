@@ -46,6 +46,7 @@ class CropCycleService {
       final body = response.body;
       if (body is! List) throw const FormatException();
       final crops = body.map(CropCycle.fromJson).toList(growable: false);
+      if (crops.length > limit) throw const FormatException();
       if (farmId != null && crops.any((crop) => crop.farmId != farmId)) {
         throw const FormatException();
       }
@@ -71,6 +72,7 @@ class CropCycleService {
   Future<CropCycle> createCropCycle(CropCycleCreate request) async {
     final payload = _serializePayload(request.toJson);
     final access = await _access();
+    _ensureCurrent(access.generation);
     try {
       final response = await apiClient.postJsonWithHeaders(
         ApiConfig.endpoint('/api/v1/crops'),
@@ -79,27 +81,29 @@ class CropCycleService {
       );
       _ensureCurrent(access.generation);
       if (response.statusCode != 201) {
-        throw _statusException(response.statusCode);
+        if (_isKnownRejection(response.statusCode)) {
+          throw _statusException(response.statusCode);
+        }
+        throw _ambiguousCreation();
       }
       try {
         final crop = CropCycle.fromJson(response.body);
         if (crop.farmId != request.farmId) throw const FormatException();
         return crop;
       } on FormatException {
-        throw const CropCycleException(
-          CropCycleFailureType.ambiguousCreation,
-          'The creation result could not be confirmed. Refresh crop cycles before trying again.',
-        );
+        throw _ambiguousCreation();
       }
     } on ApiException catch (error) {
       _ensureCurrent(access.generation);
+      final status = error.statusCode;
+      if (status != null && _isKnownRejection(status)) {
+        throw _statusException(status);
+      }
       if (error.kind == ApiErrorKind.network ||
           error.kind == ApiErrorKind.timeout ||
-          error.kind == ApiErrorKind.invalidResponse) {
-        throw const CropCycleException(
-          CropCycleFailureType.ambiguousCreation,
-          'The creation result could not be confirmed. Refresh crop cycles before trying again.',
-        );
+          error.kind == ApiErrorKind.invalidResponse ||
+          status != null) {
+        throw _ambiguousCreation();
       }
       throw _transportException(error);
     }
@@ -112,6 +116,7 @@ class CropCycleService {
     _validateId(cropCycleId);
     final payload = _serializePayload(request.toJson);
     final access = await _access();
+    _ensureCurrent(access.generation);
     try {
       final response = await apiClient.putJsonWithHeaders(
         ApiConfig.endpoint('/api/v1/crops/$cropCycleId'),
@@ -120,27 +125,29 @@ class CropCycleService {
       );
       _ensureCurrent(access.generation);
       if (response.statusCode != 200) {
-        throw _statusException(response.statusCode);
+        if (_isKnownRejection(response.statusCode)) {
+          throw _statusException(response.statusCode);
+        }
+        throw _ambiguousUpdate();
       }
       try {
         final crop = CropCycle.fromJson(response.body);
         if (crop.id != cropCycleId) throw const FormatException();
         return crop;
       } on FormatException {
-        throw const CropCycleException(
-          CropCycleFailureType.ambiguousUpdate,
-          'The update result could not be confirmed. Reload the crop cycle before trying again.',
-        );
+        throw _ambiguousUpdate();
       }
     } on ApiException catch (error) {
       _ensureCurrent(access.generation);
+      final status = error.statusCode;
+      if (status != null && _isKnownRejection(status)) {
+        throw _statusException(status);
+      }
       if (error.kind == ApiErrorKind.network ||
           error.kind == ApiErrorKind.timeout ||
-          error.kind == ApiErrorKind.invalidResponse) {
-        throw const CropCycleException(
-          CropCycleFailureType.ambiguousUpdate,
-          'The update result could not be confirmed. Reload the crop cycle before trying again.',
-        );
+          error.kind == ApiErrorKind.invalidResponse ||
+          status != null) {
+        throw _ambiguousUpdate();
       }
       throw _transportException(error);
     }
@@ -149,6 +156,7 @@ class CropCycleService {
   Future<void> deleteCropCycle(int cropCycleId) async {
     _validateId(cropCycleId);
     final access = await _access();
+    _ensureCurrent(access.generation);
     try {
       final response = await apiClient.deleteWithHeaders(
         ApiConfig.endpoint('/api/v1/crops/$cropCycleId'),
@@ -156,17 +164,22 @@ class CropCycleService {
       );
       _ensureCurrent(access.generation);
       if (response.statusCode != 204) {
-        throw _statusException(response.statusCode);
+        if (_isKnownRejection(response.statusCode)) {
+          throw _statusException(response.statusCode);
+        }
+        throw _ambiguousDeletion();
       }
     } on ApiException catch (error) {
       _ensureCurrent(access.generation);
+      final status = error.statusCode;
+      if (status != null && _isKnownRejection(status)) {
+        throw _statusException(status);
+      }
       if (error.kind == ApiErrorKind.network ||
           error.kind == ApiErrorKind.timeout ||
-          error.kind == ApiErrorKind.invalidResponse) {
-        throw const CropCycleException(
-          CropCycleFailureType.ambiguousDeletion,
-          'The deletion result could not be confirmed. Refresh crop cycles before trying again.',
-        );
+          error.kind == ApiErrorKind.invalidResponse ||
+          status != null) {
+        throw _ambiguousDeletion();
       }
       throw _transportException(error);
     }
@@ -174,24 +187,35 @@ class CropCycleService {
 
   Future<ApiDecodedResponse> _authenticatedGet(Uri uri) async {
     var access = await _access();
+    _ensureCurrent(access.generation);
     try {
-      var response = await apiClient.getDecodedResponse(
-        uri,
-        headers: _authorization(access.accessToken),
-      );
+      var response = await _getPreservingStatus(uri, access.accessToken);
       _ensureCurrent(access.generation);
       if (response.statusCode == 401) {
         access = await _refresh(access.generation);
-        response = await apiClient.getDecodedResponse(
-          uri,
-          headers: _authorization(access.accessToken),
-        );
+        _ensureCurrent(access.generation);
+        response = await _getPreservingStatus(uri, access.accessToken);
         _ensureCurrent(access.generation);
       }
       return response;
     } on ApiException catch (error) {
       _ensureCurrent(access.generation);
       throw _transportException(error);
+    }
+  }
+
+  Future<ApiDecodedResponse> _getPreservingStatus(Uri uri, String token) async {
+    try {
+      return await apiClient.getDecodedResponse(
+        uri,
+        headers: _authorization(token),
+      );
+    } on ApiException catch (error) {
+      final status = error.statusCode;
+      if (status != null) {
+        return ApiDecodedResponse(statusCode: status, body: null);
+      }
+      rethrow;
     }
   }
 
@@ -327,6 +351,24 @@ class CropCycleService {
           listing ? 'Unable to load crop cycles. Please try again.' : 'AgroCrew could not complete the crop cycle request. Please try again.',
         ),
       };
+
+  static bool _isKnownRejection(int status) =>
+      status == 401 || status == 404 || status == 409 || status == 422;
+
+  static CropCycleException _ambiguousCreation() => const CropCycleException(
+    CropCycleFailureType.ambiguousCreation,
+    'The creation result could not be confirmed. Refresh crop cycles before trying again.',
+  );
+
+  static CropCycleException _ambiguousUpdate() => const CropCycleException(
+    CropCycleFailureType.ambiguousUpdate,
+    'The update result could not be confirmed. Reload the crop cycle before trying again.',
+  );
+
+  static CropCycleException _ambiguousDeletion() => const CropCycleException(
+    CropCycleFailureType.ambiguousDeletion,
+    'The deletion result could not be confirmed. Refresh crop cycles before trying again.',
+  );
 
   static CropCycleException _invalidResponse() => const CropCycleException(
     CropCycleFailureType.invalidResponse,

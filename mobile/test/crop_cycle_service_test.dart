@@ -71,6 +71,28 @@ void main() {
       expect(partial.hasMore, isFalse);
     });
 
+    test('exactly full page may be followed by an empty final page', () async {
+      var calls = 0;
+      final fixture = await _fixture((request) async {
+        calls += 1;
+        expect(request.url.queryParameters['offset'], calls == 1 ? '0' : '2');
+        return http.Response(
+          calls == 1 ? jsonEncode([_cropJson(1), _cropJson(2)]) : '[]',
+          200,
+        );
+      });
+      final full = await fixture.service.listCropCycles(limit: 2);
+      expect(full.hasMore, isTrue);
+      expect(full.nextOffset, 2);
+      final finalPage = await fixture.service.listCropCycles(
+        limit: 2,
+        offset: full.nextOffset,
+      );
+      expect(finalPage.crops, isEmpty);
+      expect(finalPage.hasMore, isFalse);
+      expect(finalPage.nextOffset, 2);
+    });
+
     test('get validates returned ID', () async {
       final fixture = await _fixture((request) async {
         expect(request.url.path, '/api/v1/crops/9');
@@ -312,6 +334,56 @@ void main() {
       expect((cropCalls, refreshCalls), (2, 1));
     });
 
+    for (final body in ['', 'not-json']) {
+      test('GET 401 body "$body" still refreshes and retries', () async {
+        var cropCalls = 0;
+        var refreshCalls = 0;
+        final fixture = await _fixture((request) async {
+          if (request.url.path.endsWith('/refresh')) {
+            refreshCalls += 1;
+            return _refreshResponse();
+          }
+          cropCalls += 1;
+          if (cropCalls == 1) return http.Response(body, 401);
+          expect(request.headers['authorization'], 'Bearer access-b');
+          return http.Response('[]', 200);
+        });
+        await fixture.service.listCropCycles();
+        expect((cropCalls, refreshCalls), (2, 1));
+      });
+    }
+
+    test('second non-JSON GET 401 is terminal', () async {
+      var cropCalls = 0;
+      var refreshCalls = 0;
+      final fixture = await _fixture((request) async {
+        if (request.url.path.endsWith('/refresh')) {
+          refreshCalls += 1;
+          return _refreshResponse();
+        }
+        cropCalls += 1;
+        return http.Response('not-json', 401);
+      });
+      await expectLater(
+        fixture.service.listCropCycles(),
+        _failure(CropCycleFailureType.unauthorized),
+      );
+      expect((cropCalls, refreshCalls), (2, 1));
+    });
+
+    test('details GET applies the malformed-body 401 refresh policy', () async {
+      var detailCalls = 0;
+      final fixture = await _fixture((request) async {
+        if (request.url.path.endsWith('/refresh')) return _refreshResponse();
+        detailCalls += 1;
+        if (detailCalls == 1) return http.Response('', 401);
+        expect(request.headers['authorization'], 'Bearer access-b');
+        return http.Response(jsonEncode(_cropJson(7)), 200);
+      });
+      expect((await fixture.service.getCropCycle(7)).id, 7);
+      expect(detailCalls, 2);
+    });
+
     test('GET refresh failure is sanitized and not retried', () async {
       var cropCalls = 0;
       var refreshCalls = 0;
@@ -377,8 +449,6 @@ void main() {
       404: CropCycleFailureType.notFound,
       409: CropCycleFailureType.conflict,
       422: CropCycleFailureType.validation,
-      500: CropCycleFailureType.server,
-      418: CropCycleFailureType.server,
     }.entries) {
       test('maps HTTP ${entry.key} without exposing response detail', () async {
         final fixture = await _fixture(
@@ -395,6 +465,42 @@ void main() {
         );
       });
     }
+
+    test('known mutation rejection survives a malformed error body', () async {
+      final fixture = await _fixture(
+        (_) async => http.Response('not-json private detail', 404),
+      );
+      await expectLater(
+        fixture.service.deleteCropCycle(4),
+        _failure(CropCycleFailureType.notFound),
+      );
+    });
+
+    test(
+      'read HTTP 500 with malformed JSON remains a server failure',
+      () async {
+        final fixture = await _fixture(
+          (_) async => http.Response('not-json private detail', 500),
+        );
+        await expectLater(
+          fixture.service.listCropCycles(),
+          _failure(CropCycleFailureType.server),
+        );
+      },
+    );
+
+    test('mutation non-JSON 401 is unauthorized and never replayed', () async {
+      var calls = 0;
+      final fixture = await _fixture((_) async {
+        calls += 1;
+        return http.Response('not-json', 401);
+      });
+      await expectLater(
+        fixture.service.createCropCycle(_create()),
+        _failure(CropCycleFailureType.unauthorized),
+      );
+      expect(calls, 1);
+    });
 
     test('list rejects non-array and malformed entries', () async {
       var calls = 0;
@@ -418,6 +524,32 @@ void main() {
       );
       await expectLater(
         fixture.service.listCropCycles(farmId: 8),
+        _failure(CropCycleFailureType.invalidResponse),
+      );
+    });
+
+    test('list rejects an oversized page without truncation', () async {
+      final fixture = await _fixture(
+        (_) async => http.Response(
+          jsonEncode([_cropJson(1), _cropJson(2), _cropJson(3)]),
+          200,
+        ),
+      );
+      await expectLater(
+        fixture.service.listCropCycles(limit: 2),
+        _failure(CropCycleFailureType.invalidResponse),
+      );
+    });
+
+    test('filtered list rejects an oversized matching page', () async {
+      final fixture = await _fixture(
+        (_) async => http.Response(
+          jsonEncode([_cropJson(1, farmId: 8), _cropJson(2, farmId: 8)]),
+          200,
+        ),
+      );
+      await expectLater(
+        fixture.service.listCropCycles(limit: 1, farmId: 8),
         _failure(CropCycleFailureType.invalidResponse),
       );
     });
@@ -496,6 +628,43 @@ void main() {
   });
 
   group('transport uncertainty and stale sessions', () {
+    for (final status in [202, 418, 500, 503]) {
+      for (final entry in <String, CropCycleFailureType>{
+        'POST': CropCycleFailureType.ambiguousCreation,
+        'PUT': CropCycleFailureType.ambiguousUpdate,
+        'DELETE': CropCycleFailureType.ambiguousDeletion,
+      }.entries) {
+        test('${entry.key} HTTP $status is ambiguous and sent once', () async {
+          var calls = 0;
+          final fixture = await _fixture((_) async {
+            calls += 1;
+            return http.Response(
+              entry.key == 'DELETE' ? '' : jsonEncode(_cropJson(1)),
+              status,
+            );
+          });
+          final operation = switch (entry.key) {
+            'POST' => fixture.service.createCropCycle(_create()),
+            'PUT' => fixture.service.updateCropCycle(1, _update()),
+            _ => fixture.service.deleteCropCycle(1),
+          };
+          await expectLater(
+            operation,
+            throwsA(
+              isA<CropCycleException>()
+                  .having((error) => error.type, 'type', entry.value)
+                  .having(
+                    (error) => error.message,
+                    'message',
+                    anyOf(contains('Refresh'), contains('Reload')),
+                  ),
+            ),
+          );
+          expect(calls, 1);
+        });
+      }
+    }
+
     test('GET network and timeout remain ordinary read failures', () async {
       final network = await _fixture(
         (request) async => throw http.ClientException('private', request.url),
@@ -562,16 +731,23 @@ void main() {
 
     test('logout makes delayed list success stale', () async {
       final response = Completer<http.Response>();
+      final requestStarted = Completer<void>();
       final fixture = await _fixture((request) {
         if (request.url.path.endsWith('/logout')) {
           return Future.value(http.Response('', 204));
         }
+        requestStarted.complete();
         return response.future;
       });
       final pending = fixture.service.listCropCycles();
+      final expectation = expectLater(
+        pending,
+        _failure(CropCycleFailureType.staleSession),
+      );
+      await requestStarted.future;
       await fixture.session.logout(fixture.authService);
       response.complete(http.Response('[]', 200));
-      await expectLater(pending, _failure(CropCycleFailureType.staleSession));
+      await expectation;
     });
 
     test('logout makes delayed mutation and delayed error stale', () async {
@@ -580,62 +756,148 @@ void main() {
         http.Response('', 500),
       ]) {
         final response = Completer<http.Response>();
+        final requestStarted = Completer<void>();
         final fixture = await _fixture((request) {
           if (request.url.path.endsWith('/logout')) {
             return Future.value(http.Response('', 204));
           }
+          requestStarted.complete();
           return response.future;
         });
         final pending = fixture.service.updateCropCycle(1, _update());
+        final expectation = expectLater(
+          pending,
+          _failure(CropCycleFailureType.staleSession),
+        );
+        await requestStarted.future;
         await fixture.session.logout(fixture.authService);
         response.complete(responseValue);
-        await expectLater(pending, _failure(CropCycleFailureType.staleSession));
+        await expectation;
       }
     });
 
     test('logout makes a delayed transport error stale', () async {
       final response = Completer<http.Response>();
+      final requestStarted = Completer<void>();
       final fixture = await _fixture((request) {
         if (request.url.path.endsWith('/logout')) {
           return Future.value(http.Response('', 204));
         }
+        requestStarted.complete();
         return response.future;
       });
       final pending = fixture.service.listCropCycles();
+      final expectation = expectLater(
+        pending,
+        _failure(CropCycleFailureType.staleSession),
+      );
+      await requestStarted.future;
       await fixture.session.logout(fixture.authService);
       response.completeError(http.ClientException('private'));
-      await expectLater(pending, _failure(CropCycleFailureType.staleSession));
+      await expectation;
     });
 
     test('account replacement discards an old delayed response', () async {
       final response = Completer<http.Response>();
-      final fixture = await _fixture((_) => response.future);
+      final requestStarted = Completer<void>();
+      final fixture = await _fixture((_) {
+        requestStarted.complete();
+        return response.future;
+      });
       final pending = fixture.service.listCropCycles();
+      final expectation = expectLater(
+        pending,
+        _failure(CropCycleFailureType.staleSession),
+      );
+      await requestStarted.future;
       await fixture.session.establishVerified(
         _tokens('new-access'),
         _profile(99),
       );
       response.complete(http.Response('[]', 200));
-      await expectLater(pending, _failure(CropCycleFailureType.staleSession));
+      await expectation;
     });
 
     test('account replacement before a 401 retry prevents replay', () async {
       var cropCalls = 0;
       final first = Completer<http.Response>();
+      final requestStarted = Completer<void>();
       final fixture = await _fixture((request) async {
         if (request.url.path.endsWith('/refresh')) return _refreshResponse();
         cropCalls += 1;
+        requestStarted.complete();
         return first.future;
       });
       final pending = fixture.service.listCropCycles();
+      final expectation = expectLater(
+        pending,
+        _failure(CropCycleFailureType.staleSession),
+      );
+      await requestStarted.future;
       await fixture.session.establishVerified(
         _tokens('new-access'),
         _profile(99),
       );
       first.complete(http.Response('{}', 401));
-      await expectLater(pending, _failure(CropCycleFailureType.staleSession));
+      await expectation;
       expect(cropCalls, 1);
     });
+
+    test('stale authenticated access is rejected before dispatch', () async {
+      var calls = 0;
+      final client = ApiClient(
+        client: MockClient((_) async {
+          calls += 1;
+          return http.Response('[]', 200);
+        }),
+      );
+      final session = _StaleAccessSession();
+      final service = CropCycleService(
+        apiClient: client,
+        session: session,
+        authService: AuthService(client),
+      );
+      await expectLater(
+        service.listCropCycles(),
+        _failure(CropCycleFailureType.staleSession),
+      );
+      expect(calls, 0);
+    });
+
+    test(
+      'account replacement during refresh prevents old GET replay',
+      () async {
+        var cropCalls = 0;
+        var refreshCalls = 0;
+        final refreshStarted = Completer<void>();
+        final refreshResponse = Completer<http.Response>();
+        final fixture = await _fixture((request) async {
+          if (request.url.path.endsWith('/refresh')) {
+            refreshCalls += 1;
+            refreshStarted.complete();
+            return refreshResponse.future;
+          }
+          cropCalls += 1;
+          expect(request.headers['authorization'], isNot('Bearer new-access'));
+          return http.Response('{}', 401);
+        });
+        final pending = fixture.service.listCropCycles();
+        final expectation = expectLater(
+          pending,
+          _failure(CropCycleFailureType.staleSession),
+        );
+        await refreshStarted.future;
+        final replacement = fixture.session.establishVerified(
+          _tokens('new-access'),
+          _profile(99),
+        );
+        refreshResponse.complete(_refreshResponse());
+        await replacement;
+        await expectation;
+        expect((cropCalls, refreshCalls), (1, 1));
+        expect(fixture.session.accessToken, 'new-access');
+      },
+    );
   });
 }
 
@@ -747,4 +1009,15 @@ class _Fixture {
   final CropCycleService service;
   final AuthSession session;
   final AuthService authService;
+}
+
+class _StaleAccessSession extends AuthSession {
+  _StaleAccessSession() : super(tokenStore: MemoryAuthTokenStore());
+
+  @override
+  Future<AuthenticatedAccess> authenticatedAccess(
+    AuthService authService,
+  ) async {
+    return const AuthenticatedAccess('stale-access', -1);
+  }
 }
