@@ -180,6 +180,123 @@ void main() {
     expect(session.refreshToken, 'new-login-refresh');
     expect(store.session?.refreshToken, 'new-login-refresh');
   });
+
+  test(
+    'logout waits for pending persistence and leaves no restorable session',
+    () async {
+      final store = _Store();
+      final saveStarted = Completer<void>();
+      final saveGate = Completer<void>();
+      store.saveStarts.add(saveStarted);
+      store.saveGates.add(saveGate);
+      final session = AuthSession(tokenStore: store, clock: () => now);
+      final establishment = session.establishVerified(
+        _tokens(now, refresh: 'pending-login-refresh'),
+        _profile(),
+      );
+      final establishmentExpectation = expectLater(
+        establishment,
+        throwsA(isA<AuthSessionAccessException>()),
+      );
+      await saveStarted.future;
+
+      final revokedBodies = <Object?>[];
+      final logout = session.logout(
+        _service((request) async {
+          revokedBodies.add(jsonDecode(request.body));
+          return http.Response('', 204);
+        }),
+      );
+      saveGate.complete();
+      final result = await logout;
+      await establishmentExpectation;
+
+      expect(result.localCleanupSucceeded, isTrue);
+      expect(result.remoteLogoutConfirmed, isTrue);
+      expect(revokedBodies, [
+        {'refresh_token': 'pending-login-refresh'},
+      ]);
+      expect(session.state, AuthSessionState.unauthenticated);
+      expect(store.session, isNull);
+      expect(
+        (await _restored(store, now: now)).state,
+        AuthSessionState.unauthenticated,
+      );
+    },
+  );
+
+  test(
+    'newer overlapping account establishment wins memory and storage',
+    () async {
+      final store = _Store();
+      final firstStarted = Completer<void>();
+      final firstGate = Completer<void>();
+      final secondStarted = Completer<void>();
+      final secondGate = Completer<void>();
+      store.saveStarts.addAll([firstStarted, secondStarted]);
+      store.saveGates.addAll([firstGate, secondGate]);
+      final session = AuthSession(tokenStore: store, clock: () => now);
+      final accountA = session.establishVerified(
+        _tokens(now, access: 'account-a-access', refresh: 'account-a-refresh'),
+        _profile(),
+      );
+      final accountAExpectation = expectLater(
+        accountA,
+        throwsA(isA<AuthSessionAccessException>()),
+      );
+      await firstStarted.future;
+
+      final accountB = session.establishVerified(
+        _tokens(now, access: 'account-b-access', refresh: 'account-b-refresh'),
+        _profile(),
+      );
+      secondGate.complete();
+      firstGate.complete();
+      await accountAExpectation;
+      await accountB;
+
+      expect(store.writeOrder, ['account-a-refresh', 'account-b-refresh']);
+      expect(session.accessToken, 'account-b-access');
+      expect(store.session?.accessToken, 'account-b-access');
+      final restored = await _restored(store, now: now);
+      expect(restored.accessToken, 'account-b-access');
+    },
+  );
+
+  test('stale permanent failure cannot clear a newer account', () async {
+    final store = _Store();
+    final session = await _verifiedSession(store, now);
+    final clearStarted = Completer<void>();
+    final clearGate = Completer<void>();
+    store.clearStarted = clearStarted;
+    store.clearGate = clearGate;
+    final expired = session.refreshAuthenticatedAccess(
+      _service((request) async {
+        expect(request.url.path, endsWith('/refresh'));
+        return http.Response('{"detail":"expired"}', 401);
+      }, now: now),
+      session.generation,
+    );
+    final expiredExpectation = expectLater(expired, throwsA(anything));
+    await clearStarted.future;
+
+    final newer = _tokens(
+      now,
+      access: 'new-account-access',
+      refresh: 'new-account-refresh',
+    );
+    final replacement = session.establishVerified(newer, _profile());
+    clearGate.complete();
+    await expiredExpectation;
+    await replacement;
+
+    expect(session.accessToken, 'new-account-access');
+    expect(store.session?.accessToken, 'new-account-access');
+    store.clearStarted = null;
+    store.clearGate = null;
+    final restored = await _restored(store, now: now);
+    expect(restored.accessToken, 'new-account-access');
+  });
 }
 
 Future<AuthSession> _verifiedSession(_Store store, DateTime now) async {
@@ -188,9 +305,15 @@ Future<AuthSession> _verifiedSession(_Store store, DateTime now) async {
   return session;
 }
 
-Future<AuthSession> _restored(_Store store) async {
-  final session = AuthSession(tokenStore: store);
-  await session.restore(_service((_) async => _profileResponse()));
+Future<AuthSession> _restored(_Store store, {DateTime? now}) async {
+  final session = AuthSession(
+    tokenStore: store,
+    clock: now == null ? null : () => now,
+  );
+  await session.restore(
+    _service((_) async => _profileResponse(), now: now),
+    now: now,
+  );
   return session;
 }
 
@@ -199,14 +322,17 @@ AuthService _service(MockClientHandler handler, {DateTime? now}) => AuthService(
   clock: now == null ? null : () => now,
 );
 
-LoginResponse _tokens(DateTime now, {String refresh = 'old-refresh'}) =>
-    LoginResponse(
-      accessToken: 'old-access',
-      refreshToken: refresh,
-      issuedAt: now,
-      expiresIn: const Duration(minutes: 30),
-      refreshExpiresIn: const Duration(days: 7),
-    );
+LoginResponse _tokens(
+  DateTime now, {
+  String access = 'old-access',
+  String refresh = 'old-refresh',
+}) => LoginResponse(
+  accessToken: access,
+  refreshToken: refresh,
+  issuedAt: now,
+  expiresIn: const Duration(minutes: 30),
+  refreshExpiresIn: const Duration(days: 7),
+);
 
 http.Response _refreshResponse() => http.Response(
   jsonEncode({
@@ -243,11 +369,20 @@ UserProfile _profile() => UserProfile(
 class _Store implements AuthTokenStore {
   LoginResponse? session;
   int clearCount = 0;
+  int saveCount = 0;
   bool failClear = false;
+  final saveStarts = <Completer<void>>[];
+  final saveGates = <Completer<void>>[];
+  final writeOrder = <String>[];
+  Completer<void>? clearStarted;
+  Completer<void>? clearGate;
 
   @override
   Future<void> clearSession() async {
     clearCount += 1;
+    clearStarted?.complete();
+    final gate = clearGate;
+    if (gate != null) await gate.future;
     if (failClear) {
       throw const AuthTokenStoreException('private storage failure');
     }
@@ -258,5 +393,11 @@ class _Store implements AuthTokenStore {
   Future<LoginResponse?> readSession() async => session;
 
   @override
-  Future<void> saveSession(LoginResponse value) async => session = value;
+  Future<void> saveSession(LoginResponse value) async {
+    final index = saveCount++;
+    if (index < saveStarts.length) saveStarts[index].complete();
+    if (index < saveGates.length) await saveGates[index].future;
+    session = value;
+    writeOrder.add(value.refreshToken);
+  }
 }

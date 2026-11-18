@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import 'auth_service.dart';
@@ -31,12 +33,14 @@ class AuthSession extends ChangeNotifier {
   AuthSessionState _state = AuthSessionState.unauthenticated;
   String? _message;
   Future<void>? _restoreOperation;
+  Future<void> _storageOperation = Future<void>.value();
   Future<LoginResponse>? _refreshOperation;
   Future<LogoutResult>? _logoutOperation;
   bool _logoutRequested = false;
   bool _lastRemoteLogoutConfirmed = false;
   bool _disposed = false;
   int _generation = 0;
+  final Map<int, String> _pendingEstablishmentRefreshTokens = {};
 
   static DateTime _utcNow() => DateTime.now().toUtc();
 
@@ -135,33 +139,40 @@ class AuthSession extends ChangeNotifier {
     _state = AuthSessionState.restoring;
     _message = 'Securing your session...';
     notifyListeners();
-    final refresh = _refreshOperation;
-    if (refresh != null) {
-      try {
-        await refresh;
-      } on Object {
-        // A new verified login supersedes any older refresh result.
-      }
-    }
+    _pendingEstablishmentRefreshTokens[generation] = response.refreshToken;
     try {
-      await _tokenStore.saveSession(response);
-    } on AuthTokenStoreException {
-      if (generation == _generation) {
-        _state = AuthSessionState.unauthenticated;
-        _message =
-            'Your session could not be stored securely. Please try again.';
-        notifyListeners();
+      final refresh = _refreshOperation;
+      if (refresh != null) {
+        try {
+          await refresh;
+        } on Object {
+          // A new verified login supersedes any older refresh result.
+        }
       }
-      rethrow;
+      try {
+        await _runStorage<void>(() async {
+          _requireActiveEstablishment(generation);
+          await _tokenStore.saveSession(response);
+          _requireActiveEstablishment(generation);
+        });
+      } on AuthTokenStoreException {
+        if (generation == _generation) {
+          _state = AuthSessionState.unauthenticated;
+          _message =
+              'Your session could not be stored securely. Please try again.';
+          notifyListeners();
+        }
+        rethrow;
+      }
+      _requireActiveEstablishment(generation);
+      _tokens = response;
+      _profile = profile;
+      _state = AuthSessionState.authenticated;
+      _message = null;
+      notifyListeners();
+    } finally {
+      _pendingEstablishmentRefreshTokens.remove(generation);
     }
-    if (generation != _generation || _logoutRequested) {
-      throw const AuthSessionAccessException();
-    }
-    _tokens = response;
-    _profile = profile;
-    _state = AuthSessionState.authenticated;
-    _message = null;
-    notifyListeners();
   }
 
   Future<void> restore(AuthService authService, {DateTime? now}) {
@@ -211,6 +222,10 @@ class AuthSession extends ChangeNotifier {
     _logoutRequested = true;
     _generation += 1;
     final originalRefreshToken = _tokens?.refreshToken;
+    final refreshTokens = <String>{
+      ..._pendingEstablishmentRefreshTokens.values,
+      ?originalRefreshToken,
+    };
     final activeRefresh = _refreshOperation;
     _tokens = null;
     _profile = null;
@@ -219,8 +234,13 @@ class AuthSession extends ChangeNotifier {
     notifyListeners();
 
     late final Future<LogoutResult> operation;
-    operation = _performLogout(authService, originalRefreshToken, activeRefresh)
-        .whenComplete(() {
+    operation =
+        _performLogout(
+          authService,
+          refreshTokens,
+          originalRefreshToken,
+          activeRefresh,
+        ).whenComplete(() {
           if (identical(_logoutOperation, operation)) _logoutOperation = null;
         });
     _logoutOperation = operation;
@@ -229,15 +249,18 @@ class AuthSession extends ChangeNotifier {
 
   Future<LogoutResult> _performLogout(
     AuthService authService,
+    Set<String> refreshTokens,
     String? originalRefreshToken,
     Future<LoginResponse>? activeRefresh,
   ) async {
-    var refreshToken = originalRefreshToken;
     var refreshOutcomeUncertain = false;
     if (activeRefresh != null) {
       try {
         final rotated = await activeRefresh;
-        refreshToken = rotated.refreshToken;
+        if (originalRefreshToken != null) {
+          refreshTokens.remove(originalRefreshToken);
+        }
+        refreshTokens.add(rotated.refreshToken);
       } on Object {
         refreshOutcomeUncertain = true;
         // The old token is still the best revocation candidate. If the server
@@ -246,24 +269,30 @@ class AuthSession extends ChangeNotifier {
     }
 
     var localCleanupSucceeded = false;
-    var remoteLogoutConfirmed = refreshToken == null;
+    var remoteLogoutConfirmed = refreshTokens.isEmpty;
     try {
-      await _tokenStore.clearSession();
+      await _runStorage<void>(_tokenStore.clearSession);
       localCleanupSucceeded = true;
     } on AuthTokenStoreException {
       // Memory already failed closed. The retry state below keeps restoration
       // blocked until encrypted-storage deletion succeeds.
     }
 
-    if (refreshToken != null) {
-      try {
-        await authService.logout(refreshToken);
-        remoteLogoutConfirmed = !refreshOutcomeUncertain;
-      } on LogoutException {
-        remoteLogoutConfirmed = false;
-      } on Object {
-        remoteLogoutConfirmed = false;
+    if (refreshTokens.isNotEmpty) {
+      var allRevocationsConfirmed = true;
+      for (final refreshToken in refreshTokens) {
+        try {
+          await authService.logout(refreshToken);
+        } on LogoutException {
+          allRevocationsConfirmed = false;
+        } on Object {
+          allRevocationsConfirmed = false;
+        }
       }
+      remoteLogoutConfirmed =
+          allRevocationsConfirmed && !refreshOutcomeUncertain;
+    } else if (refreshOutcomeUncertain) {
+      remoteLogoutConfirmed = false;
     }
     _lastRemoteLogoutConfirmed = remoteLogoutConfirmed;
 
@@ -299,7 +328,7 @@ class AuthSession extends ChangeNotifier {
     _message = 'Retrying secure cleanup...';
     notifyListeners();
     try {
-      await _tokenStore.clearSession();
+      await _runStorage<void>(_tokenStore.clearSession);
       _logoutRequested = false;
       _state = AuthSessionState.unauthenticated;
       _message = _lastRemoteLogoutConfirmed
@@ -318,7 +347,10 @@ class AuthSession extends ChangeNotifier {
     _message = 'Restoring your session...';
     notifyListeners();
     try {
-      final saved = await _tokenStore.readSession();
+      final saved = await _runStorage<LoginResponse?>(() async {
+        if (generation != _generation) return null;
+        return _tokenStore.readSession();
+      });
       if (generation != _generation) return;
       if (saved == null) {
         _setUnauthenticated();
@@ -464,10 +496,21 @@ class AuthSession extends ChangeNotifier {
       throw const _StaleSessionException();
     }
     try {
-      await _tokenStore.saveSession(rotated);
+      await _runStorage<void>(() async {
+        final queuedCurrent = _requireCurrentTokens(generation);
+        if (queuedCurrent.refreshToken != source.refreshToken) {
+          throw const _StaleSessionException();
+        }
+        await _tokenStore.saveSession(rotated);
+        _requireCurrentTokens(generation);
+      });
     } on AuthTokenStoreException {
       try {
-        await _tokenStore.clearSession();
+        await _runStorage<void>(() async {
+          if (generation == _generation) {
+            await _tokenStore.clearSession();
+          }
+        });
       } on AuthTokenStoreException {
         // Memory is still failed closed even if secure cleanup also fails.
       }
@@ -488,8 +531,13 @@ class AuthSession extends ChangeNotifier {
   }
 
   Future<void> _clearAndRequireLogin(String message, int generation) async {
+    var cleared = false;
     try {
-      await _tokenStore.clearSession();
+      cleared = await _runStorage<bool>(() async {
+        if (generation != _generation) return false;
+        await _tokenStore.clearSession();
+        return true;
+      });
     } on AuthTokenStoreException {
       if (generation != _generation) return;
       _tokens = null;
@@ -499,7 +547,7 @@ class AuthSession extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    if (generation != _generation) return;
+    if (!cleared || generation != _generation) return;
     _tokens = null;
     _profile = null;
     _state = AuthSessionState.requiresLogin;
@@ -520,6 +568,24 @@ class AuthSession extends ChangeNotifier {
     _state = AuthSessionState.verificationError;
     _message = message;
     notifyListeners();
+  }
+
+  void _requireActiveEstablishment(int generation) {
+    if (generation != _generation || _logoutRequested) {
+      throw const AuthSessionAccessException();
+    }
+  }
+
+  Future<T> _runStorage<T>(Future<T> Function() operation) {
+    final result = Completer<T>();
+    _storageOperation = _storageOperation.then((_) async {
+      try {
+        result.complete(await operation());
+      } on Object catch (error, stackTrace) {
+        result.completeError(error, stackTrace);
+      }
+    });
+    return result.future;
   }
 }
 
