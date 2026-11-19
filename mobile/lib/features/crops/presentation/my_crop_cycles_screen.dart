@@ -29,6 +29,9 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
   late final int _sessionGeneration;
   int _cropRequestSerial = 0;
   int _farmRequestSerial = 0;
+  bool _routeInvalidating = false;
+  bool _firstPageRequestActive = false;
+  int? _firstPageRequestFarmId;
   int? _selectedFarmId;
   int _nextOffset = 0;
   int _farmNextOffset = 0;
@@ -36,13 +39,16 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
   bool _refreshing = false;
   bool _loadingMore = false;
   bool _hasMore = false;
-  bool _farmLoading = true;
+  bool _farmLoading = false;
   bool _farmLoadingMore = false;
   bool _farmHasMore = false;
   String? _initialError;
+  CropCycleFailureType? _initialErrorType;
   String? _listMessage;
   String? _loadMoreError;
   String? _farmError;
+  _FarmRequestKind? _failedFarmRequestKind;
+  int? _failedFarmOffset;
 
   @override
   void initState() {
@@ -50,7 +56,7 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
     _sessionGeneration = widget.session.generation;
     widget.session.addListener(_sessionChanged);
     _loadFirstPage();
-    _loadFarmPage(reset: true);
+    _loadFarmPage(_FarmRequestKind.initial);
   }
 
   @override
@@ -65,11 +71,13 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
       widget.session.isCurrentGeneration(_sessionGeneration);
 
   void _sessionChanged() {
-    if (_sessionIsCurrent) return;
+    if (_sessionIsCurrent || _routeInvalidating) return;
     _invalidateProtectedRoute();
   }
 
   void _invalidateProtectedRoute() {
+    if (_routeInvalidating) return;
+    _routeInvalidating = true;
     _cropRequestSerial += 1;
     _farmRequestSerial += 1;
     if (mounted) {
@@ -78,13 +86,19 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
         _farmNames.clear();
         _selectedFarmId = null;
         _initialError = null;
+        _initialErrorType = null;
         _listMessage = null;
         _loadMoreError = null;
         _farmError = null;
         _initialLoading = true;
+        _refreshing = false;
+        _firstPageRequestActive = false;
+        _firstPageRequestFarmId = null;
         _loadingMore = false;
         _farmLoading = false;
         _farmLoadingMore = false;
+        _failedFarmRequestKind = null;
+        _failedFarmOffset = null;
       });
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -101,17 +115,25 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
       mounted &&
       serial == _cropRequestSerial &&
       farmId == _selectedFarmId &&
+      !_routeInvalidating &&
       _sessionIsCurrent;
 
   bool _acceptFarmResult(int serial) =>
-      mounted && serial == _farmRequestSerial && _sessionIsCurrent;
+      mounted &&
+      serial == _farmRequestSerial &&
+      !_routeInvalidating &&
+      _sessionIsCurrent;
 
   Future<void> _loadFirstPage({bool refresh = false}) async {
-    if (!_sessionIsCurrent) return;
-    final serial = ++_cropRequestSerial;
+    if (_routeInvalidating || !_sessionIsCurrent) return;
     final farmId = _selectedFarmId;
+    if (_firstPageRequestActive && _firstPageRequestFarmId == farmId) return;
+    final serial = ++_cropRequestSerial;
     setState(() {
+      _firstPageRequestActive = true;
+      _firstPageRequestFarmId = farmId;
       _initialError = null;
+      _initialErrorType = null;
       _listMessage = null;
       _loadMoreError = null;
       _loadingMore = false;
@@ -135,6 +157,8 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
         _hasMore = page.hasMore;
         _initialLoading = false;
         _refreshing = false;
+        _firstPageRequestActive = false;
+        _firstPageRequestFarmId = null;
       });
     } on CropCycleException catch (error) {
       if (!_acceptCropResult(serial, farmId)) return;
@@ -143,11 +167,18 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
         _invalidateProtectedRoute();
         return;
       }
+      if (error.type == CropCycleFailureType.notFound && farmId != null) {
+        _showSelectedFarmUnavailable();
+        return;
+      }
       setState(() {
         _initialLoading = false;
         _refreshing = false;
+        _firstPageRequestActive = false;
+        _firstPageRequestFarmId = null;
         if (_crops.isEmpty) {
           _initialError = error.message;
+          _initialErrorType = error.type;
         } else {
           _listMessage = error.message;
         }
@@ -156,7 +187,14 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
   }
 
   Future<void> _loadMore() async {
-    if (_loadingMore || !_hasMore || !_sessionIsCurrent) return;
+    if (_routeInvalidating ||
+        _loadingMore ||
+        _initialLoading ||
+        _refreshing ||
+        !_hasMore ||
+        !_sessionIsCurrent) {
+      return;
+    }
     final serial = _cropRequestSerial;
     final farmId = _selectedFarmId;
     final offset = _nextOffset;
@@ -187,6 +225,10 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
         _invalidateProtectedRoute();
         return;
       }
+      if (error.type == CropCycleFailureType.notFound && farmId != null) {
+        _showSelectedFarmUnavailable();
+        return;
+      }
       setState(() {
         _loadingMore = false;
         _loadMoreError = error.message;
@@ -195,12 +237,17 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
   }
 
   Future<void> _changeFarm(int? farmId) async {
-    if (farmId == _selectedFarmId || !_sessionIsCurrent) return;
+    if (_routeInvalidating || farmId == _selectedFarmId || !_sessionIsCurrent) {
+      return;
+    }
     _cropRequestSerial += 1;
     setState(() {
+      _firstPageRequestActive = false;
+      _firstPageRequestFarmId = null;
       _selectedFarmId = farmId;
       _crops.clear();
       _initialError = null;
+      _initialErrorType = null;
       _listMessage = null;
       _loadMoreError = null;
       _nextOffset = 0;
@@ -212,12 +259,38 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
     await _loadFirstPage();
   }
 
-  Future<void> _loadFarmPage({bool reset = false}) async {
-    if (!_sessionIsCurrent || _farmLoadingMore) return;
+  void _showSelectedFarmUnavailable() {
+    if (!mounted || _routeInvalidating) return;
+    setState(() {
+      _crops.clear();
+      _nextOffset = 0;
+      _hasMore = false;
+      _initialLoading = false;
+      _refreshing = false;
+      _firstPageRequestActive = false;
+      _firstPageRequestFarmId = null;
+      _loadingMore = false;
+      _loadMoreError = null;
+      _listMessage = null;
+      _initialError = 'Crop cycle or farm not found.';
+      _initialErrorType = CropCycleFailureType.notFound;
+    });
+  }
+
+  Future<void> _loadFarmPage(_FarmRequestKind kind, {int? retryOffset}) async {
+    if (_routeInvalidating ||
+        !_sessionIsCurrent ||
+        _farmLoading ||
+        _farmLoadingMore) {
+      return;
+    }
+    final reset = kind != _FarmRequestKind.more;
     final serial = reset ? ++_farmRequestSerial : _farmRequestSerial;
-    final offset = reset ? 0 : _farmNextOffset;
+    final offset = reset ? 0 : (retryOffset ?? _farmNextOffset);
     setState(() {
       _farmError = null;
+      _failedFarmRequestKind = null;
+      _failedFarmOffset = null;
       if (reset) {
         _farmLoading = true;
       } else {
@@ -239,6 +312,8 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
         _farmHasMore = page.hasMore;
         _farmLoading = false;
         _farmLoadingMore = false;
+        _failedFarmRequestKind = null;
+        _failedFarmOffset = null;
       });
     } on FarmException catch (error) {
       if (!_acceptFarmResult(serial)) return;
@@ -251,8 +326,16 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
         _farmLoading = false;
         _farmLoadingMore = false;
         _farmError = error.message;
+        _failedFarmRequestKind = kind;
+        _failedFarmOffset = offset;
       });
     }
+  }
+
+  void _retryFarmPage() {
+    final kind = _failedFarmRequestKind;
+    if (kind == null) return;
+    _loadFarmPage(kind, retryOffset: _failedFarmOffset);
   }
 
   String _farmLabel(int farmId) => _farmNames[farmId] ?? 'Farm #$farmId';
@@ -291,9 +374,9 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
                 hasMore: _farmHasMore,
                 error: _farmError,
                 onChanged: _changeFarm,
-                onLoadMore: () => _loadFarmPage(),
-                onRetry: () => _loadFarmPage(reset: _farmNames.isEmpty),
-                onRefresh: () => _loadFarmPage(reset: true),
+                onLoadMore: () => _loadFarmPage(_FarmRequestKind.more),
+                onRetry: _retryFarmPage,
+                onRefresh: () => _loadFarmPage(_FarmRequestKind.refresh),
               ),
               Expanded(child: _body()),
             ],
@@ -320,7 +403,7 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
     if (_initialError != null) {
       final unavailableFarm =
           _selectedFarmId != null &&
-          _initialError == 'Crop cycle or farm not found.';
+          _initialErrorType == CropCycleFailureType.notFound;
       return _RefreshableMessage(
         key: const Key('crop-cycles-error'),
         icon: unavailableFarm
@@ -400,7 +483,9 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
               padding: const EdgeInsets.symmetric(vertical: 8),
               child: OutlinedButton.icon(
                 key: const Key('crop-cycles-load-more'),
-                onPressed: _loadingMore ? null : _loadMore,
+                onPressed: _loadingMore || _refreshing || _initialLoading
+                    ? null
+                    : _loadMore,
                 icon: _loadingMore
                     ? const SizedBox.square(
                         dimension: 18,
@@ -456,44 +541,48 @@ class _FarmFilterPanel extends StatelessWidget {
             Row(
               children: [
                 Expanded(
-                  child: DropdownButtonFormField<int>(
+                  child: KeyedSubtree(
                     key: const Key('crop-cycles-farm-filter'),
-                    initialValue: selectedValue,
-                    isExpanded: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Farm filter',
-                      prefixIcon: Icon(Icons.filter_alt_outlined),
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                    items: [
-                      const DropdownMenuItem(
-                        value: -1,
-                        child: Text('All Farms'),
+                    child: DropdownButtonFormField<int>(
+                      key: ValueKey('farm-filter-value-$selectedValue'),
+                      initialValue: selectedValue,
+                      isExpanded: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Farm filter',
+                        prefixIcon: Icon(Icons.filter_alt_outlined),
+                        border: OutlineInputBorder(),
+                        isDense: true,
                       ),
-                      if (selectedFarmId != null &&
-                          !farmNames.containsKey(selectedFarmId))
-                        DropdownMenuItem(
-                          value: selectedFarmId,
-                          child: Text('Farm #$selectedFarmId'),
+                      items: [
+                        const DropdownMenuItem(
+                          value: -1,
+                          child: Text('All Farms'),
                         ),
-                      for (final entry in entries)
-                        DropdownMenuItem(
-                          value: entry.key,
-                          child: Text(
-                            '${entry.value} (Farm #${entry.key})',
-                            overflow: TextOverflow.ellipsis,
+                        if (selectedFarmId != null &&
+                            !farmNames.containsKey(selectedFarmId))
+                          DropdownMenuItem(
+                            value: selectedFarmId,
+                            child: Text('Farm #$selectedFarmId'),
                           ),
-                        ),
-                    ],
-                    onChanged: (value) => onChanged(value == -1 ? null : value),
+                        for (final entry in entries)
+                          DropdownMenuItem(
+                            value: entry.key,
+                            child: Text(
+                              '${entry.value} (Farm #${entry.key})',
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                      ],
+                      onChanged: (value) =>
+                          onChanged(value == -1 ? null : value),
+                    ),
                   ),
                 ),
                 const SizedBox(width: 8),
                 IconButton(
                   key: const Key('farm-metadata-refresh'),
                   tooltip: 'Refresh farms',
-                  onPressed: loading ? null : onRefresh,
+                  onPressed: loading || loadingMore ? null : onRefresh,
                   icon: const Icon(Icons.sync),
                 ),
               ],
@@ -774,3 +863,5 @@ class _StatusPresentation {
   final Color background;
   final Color foreground;
 }
+
+enum _FarmRequestKind { initial, refresh, more }
