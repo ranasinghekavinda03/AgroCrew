@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/network/api_client.dart';
+import '../../crops/data/crop_cycle_service.dart';
+import '../../crops/presentation/my_crop_cycles_screen.dart';
 import '../../farms/data/farm_service.dart';
 import '../../farms/presentation/my_farms_screen.dart';
 import '../data/auth_service.dart';
@@ -14,11 +16,13 @@ class AuthenticatedProfileScreen extends StatefulWidget {
     required this.authService,
     required this.session,
     this.pendingTokens,
+    this.featureApiClient,
   });
 
   final AuthService authService;
   final AuthSession session;
   final LoginResponse? pendingTokens;
+  final ApiClient? featureApiClient;
 
   @override
   State<AuthenticatedProfileScreen> createState() =>
@@ -31,15 +35,23 @@ class _AuthenticatedProfileScreenState
   bool _requiresLogin = false;
   bool _isLoggingOut = false;
   String? _errorMessage;
-  late final ApiClient _farmApiClient;
+  late final ApiClient _featureApiClient;
+  late final bool _ownsFeatureApiClient;
   late final FarmService _farmService;
+  late final CropCycleService _cropCycleService;
 
   @override
   void initState() {
     super.initState();
-    _farmApiClient = ApiClient();
+    _ownsFeatureApiClient = widget.featureApiClient == null;
+    _featureApiClient = widget.featureApiClient ?? ApiClient();
     _farmService = FarmService(
-      apiClient: _farmApiClient,
+      apiClient: _featureApiClient,
+      session: widget.session,
+      authService: widget.authService,
+    );
+    _cropCycleService = CropCycleService(
+      apiClient: _featureApiClient,
       session: widget.session,
       authService: widget.authService,
     );
@@ -49,7 +61,7 @@ class _AuthenticatedProfileScreenState
 
   @override
   void dispose() {
-    _farmApiClient.close();
+    if (_ownsFeatureApiClient) _featureApiClient.close();
     super.dispose();
   }
 
@@ -188,6 +200,23 @@ class _AuthenticatedProfileScreenState
                                     ),
                               icon: const Icon(Icons.agriculture_outlined),
                               label: const Text('My Farms'),
+                            ),
+                            const SizedBox(height: 12),
+                            FilledButton.tonalIcon(
+                              key: const Key('my-crop-cycles-button'),
+                              onPressed: _isLoggingOut
+                                  ? null
+                                  : () => Navigator.of(context).push<void>(
+                                      MaterialPageRoute(
+                                        builder: (_) => MyCropCyclesScreen(
+                                          cropCycleService: _cropCycleService,
+                                          farmService: _farmService,
+                                          session: widget.session,
+                                        ),
+                                      ),
+                                    ),
+                              icon: const Icon(Icons.spa_outlined),
+                              label: const Text('My Crop Cycles'),
                             ),
                             const SizedBox(height: 12),
                             OutlinedButton.icon(
