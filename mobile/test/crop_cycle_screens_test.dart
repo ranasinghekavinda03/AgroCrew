@@ -101,16 +101,26 @@ void main() {
   testWidgets('farm metadata failure does not hide crop cycles', (
     tester,
   ) async {
-    final fixture = await _fixture(
-      (request) async => request.url.path == '/api/v1/farms'
-          ? http.Response('{}', 500)
-          : http.Response(jsonEncode([_crop(7, farmId: 77)]), 200),
-    );
+    var farmCalls = 0;
+    final fixture = await _fixture((request) async {
+      if (request.url.path == '/api/v1/farms') {
+        farmCalls++;
+        expect(request.url.queryParameters['offset'], '0');
+        return farmCalls == 1
+            ? http.Response('{}', 500)
+            : http.Response(jsonEncode([_farm(77, 'Recovered Farm')]), 200);
+      }
+      return http.Response(jsonEncode([_crop(7, farmId: 77)]), 200);
+    });
     await _pumpCrops(tester, fixture);
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('farm-metadata-error')), findsOneWidget);
     expect(find.byKey(const Key('crop-cycle-card-7')), findsOneWidget);
     expect(find.text('Farm #77'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('farm-metadata-retry')));
+    await tester.pumpAndSettle();
+    expect(farmCalls, 2);
+    expect(find.text('Recovered Farm'), findsOneWidget);
   });
 
   testWidgets('farm selection sends farm_id and replaces the list', (
@@ -428,6 +438,491 @@ void main() {
     expect(find.byKey(const Key('my-farms-button')), findsNothing);
   });
 
+  testWidgets('pending refresh blocks pagination then uses refreshed offset', (
+    tester,
+  ) async {
+    final refresh = Completer<http.Response>();
+    final cropQueries = <Map<String, String>>[];
+    var firstPages = 0;
+    final fixture = await _fixture((request) async {
+      if (request.url.path == '/api/v1/farms') return http.Response('[]', 200);
+      cropQueries.add(request.url.queryParameters);
+      if (request.url.queryParameters['offset'] == '20') {
+        return http.Response(jsonEncode([_crop(121)]), 200);
+      }
+      firstPages++;
+      if (firstPages == 2) return refresh.future;
+      return http.Response(
+        jsonEncode(List.generate(20, (i) => _crop(i + 1))),
+        200,
+      );
+    });
+    await _pumpCrops(tester, fixture);
+    await tester.pumpAndSettle();
+    await _scrollToLoadMore(tester);
+    await tester.tap(find.byKey(const Key('crop-cycles-refresh')));
+    await tester.pump();
+    final button = tester.widget<OutlinedButton>(
+      find.byKey(const Key('crop-cycles-load-more')),
+    );
+    expect(button.onPressed, isNull);
+    await tester.tap(find.byKey(const Key('crop-cycles-load-more')));
+    expect(cropQueries.length, 2);
+    refresh.complete(
+      http.Response(jsonEncode(List.generate(20, (i) => _crop(i + 101))), 200),
+    );
+    await tester.pumpAndSettle();
+    await _scrollToLoadMore(tester);
+    await tester.tap(find.byKey(const Key('crop-cycles-load-more')));
+    await tester.pumpAndSettle();
+    expect(cropQueries.last['offset'], '20');
+    expect(find.byKey(const Key('crop-cycle-card-121')), findsOneWidget);
+  });
+
+  testWidgets('failed refresh preserves records and pagination recovery', (
+    tester,
+  ) async {
+    final refresh = Completer<http.Response>();
+    var calls = 0;
+    final fixture = await _fixture((request) async {
+      if (request.url.path == '/api/v1/farms') return http.Response('[]', 200);
+      calls++;
+      if (calls == 1) {
+        return http.Response(
+          jsonEncode(List.generate(20, (i) => _crop(i + 1))),
+          200,
+        );
+      }
+      if (calls == 2) return refresh.future;
+      expect(request.url.queryParameters['offset'], '20');
+      return http.Response(jsonEncode([_crop(21)]), 200);
+    });
+    await _pumpCrops(tester, fixture);
+    await tester.pumpAndSettle();
+    await _scrollToLoadMore(tester);
+    await tester.tap(find.byKey(const Key('crop-cycles-refresh')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('crop-cycles-load-more')));
+    expect(calls, 2);
+    refresh.complete(http.Response('{}', 500));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('crop-cycle-card-20')), findsOneWidget);
+    await _scrollToLoadMore(tester);
+    await tester.tap(find.byKey(const Key('crop-cycles-load-more')));
+    await tester.pumpAndSettle();
+    expect(calls, 3);
+    expect(find.byKey(const Key('crop-cycle-card-21')), findsOneWidget);
+  });
+
+  testWidgets('farm refresh retry requests offset zero and replaces metadata', (
+    tester,
+  ) async {
+    final offsets = <String?>[];
+    var farmCalls = 0;
+    final fixture = await _fixture((request) async {
+      if (request.url.path == '/api/v1/crops') return http.Response('[]', 200);
+      offsets.add(request.url.queryParameters['offset']);
+      farmCalls++;
+      if (farmCalls == 1) {
+        return http.Response(jsonEncode([_farm(1, 'Old Farm')]), 200);
+      }
+      if (farmCalls == 2) return http.Response('{}', 500);
+      return http.Response(jsonEncode([_farm(2, 'New Farm')]), 200);
+    });
+    await _pumpCrops(tester, fixture);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('farm-metadata-refresh')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('farm-metadata-retry')));
+    await tester.pumpAndSettle();
+    expect(offsets, ['0', '0', '0']);
+    await tester.tap(find.byKey(const Key('crop-cycles-farm-filter')));
+    await tester.pumpAndSettle();
+    expect(find.text('New Farm (Farm #2)'), findsOneWidget);
+    expect(find.text('Old Farm (Farm #1)'), findsNothing);
+  });
+
+  testWidgets('failed farm pagination retries the same offset', (tester) async {
+    final offsets = <String?>[];
+    var moreCalls = 0;
+    final pending = Completer<http.Response>();
+    final fixture = await _fixture((request) async {
+      if (request.url.path == '/api/v1/crops') return http.Response('[]', 200);
+      final offset = request.url.queryParameters['offset'];
+      offsets.add(offset);
+      if (offset == '0') {
+        return http.Response(
+          jsonEncode(List.generate(20, (i) => _farm(i + 1, 'Farm ${i + 1}'))),
+          200,
+        );
+      }
+      moreCalls++;
+      if (moreCalls == 1) return pending.future;
+      if (moreCalls == 2) return http.Response('{}', 500);
+      return http.Response(jsonEncode([_farm(21, 'Farm 21')]), 200);
+    });
+    await _pumpCrops(tester, fixture);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('farm-metadata-load-more')));
+    await tester.pump();
+    expect(
+      tester
+          .widget<IconButton>(find.byKey(const Key('farm-metadata-refresh')))
+          .onPressed,
+      isNull,
+    );
+    pending.complete(http.Response('{}', 500));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('farm-metadata-retry')));
+    await tester.pumpAndSettle();
+    expect(offsets.where((offset) => offset == '20').length, 2);
+    await tester.tap(find.byKey(const Key('farm-metadata-retry')));
+    await tester.pumpAndSettle();
+    expect(offsets.where((offset) => offset == '20').length, 3);
+  });
+
+  testWidgets('selected farm refresh 404 clears records and syncs All Farms', (
+    tester,
+  ) async {
+    var filteredCalls = 0;
+    final queries = <Map<String, String>>[];
+    final fixture = await _fixture((request) async {
+      if (request.url.path == '/api/v1/farms') {
+        return http.Response(jsonEncode([_farm(4, 'Farm Four')]), 200);
+      }
+      queries.add(request.url.queryParameters);
+      if (request.url.queryParameters['farm_id'] == '4') {
+        filteredCalls++;
+        return filteredCalls == 1
+            ? http.Response(jsonEncode([_crop(4, farmId: 4)]), 200)
+            : http.Response('{}', 404);
+      }
+      return http.Response('[]', 200);
+    });
+    await _pumpCrops(tester, fixture);
+    await tester.pumpAndSettle();
+    await _selectFarm(tester, 'Farm Four (Farm #4)');
+    await tester.tap(find.byKey(const Key('crop-cycles-refresh')));
+    await tester.pumpAndSettle();
+    expect(find.text('This farm is unavailable.'), findsOneWidget);
+    expect(find.byKey(const Key('crop-cycle-card-4')), findsNothing);
+    expect(_filterValue(tester), 4);
+    await tester.tap(find.text('All Farms').last);
+    await tester.pumpAndSettle();
+    expect(_filterValue(tester), -1);
+    expect(queries.last.containsKey('farm_id'), isFalse);
+  });
+
+  testWidgets('selected farm load-more 404 invalidates cached pagination', (
+    tester,
+  ) async {
+    final fixture = await _fixture((request) async {
+      if (request.url.path == '/api/v1/farms') {
+        return http.Response(jsonEncode([_farm(3, 'Farm Three')]), 200);
+      }
+      if (request.url.queryParameters['farm_id'] == '3' &&
+          request.url.queryParameters['offset'] == '20') {
+        return http.Response('{}', 404);
+      }
+      return http.Response(
+        jsonEncode(List.generate(20, (i) => _crop(i + 1, farmId: 3))),
+        200,
+      );
+    });
+    await _pumpCrops(tester, fixture);
+    await tester.pumpAndSettle();
+    await _selectFarm(tester, 'Farm Three (Farm #3)');
+    await _scrollToLoadMore(tester);
+    await tester.tap(find.byKey(const Key('crop-cycles-load-more')));
+    await tester.pumpAndSettle();
+    expect(find.text('This farm is unavailable.'), findsOneWidget);
+    expect(find.byKey(const Key('crop-cycles-load-more')), findsNothing);
+    expect(_filterValue(tester), 3);
+  });
+
+  testWidgets(
+    'full page empty final page and repeated taps stay single-flight',
+    (tester) async {
+      final finalPage = Completer<http.Response>();
+      var moreCalls = 0;
+      final fixture = await _fixture((request) async {
+        if (request.url.path == '/api/v1/farms') {
+          return http.Response('[]', 200);
+        }
+        if (request.url.queryParameters['offset'] == '20') {
+          moreCalls++;
+          return finalPage.future;
+        }
+        return http.Response(
+          jsonEncode(List.generate(20, (i) => _crop(i + 1))),
+          200,
+        );
+      });
+      await _pumpCrops(tester, fixture);
+      await tester.pumpAndSettle();
+      await _scrollToLoadMore(tester);
+      await tester.tap(find.byKey(const Key('crop-cycles-load-more')));
+      await tester.tap(find.byKey(const Key('crop-cycles-load-more')));
+      expect(moreCalls, 1);
+      finalPage.complete(http.Response('[]', 200));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('crop-cycles-load-more')), findsNothing);
+    },
+  );
+
+  testWidgets('deduplication advances with the server page offset', (
+    tester,
+  ) async {
+    final offsets = <String?>[];
+    final fixture = await _fixture((request) async {
+      if (request.url.path == '/api/v1/farms') return http.Response('[]', 200);
+      final offset = request.url.queryParameters['offset'];
+      offsets.add(offset);
+      if (offset == '0') {
+        return http.Response(
+          jsonEncode(List.generate(20, (i) => _crop(i + 1))),
+          200,
+        );
+      }
+      if (offset == '20') {
+        return http.Response(
+          jsonEncode([_crop(20), ...List.generate(19, (i) => _crop(i + 21))]),
+          200,
+        );
+      }
+      return http.Response('[]', 200);
+    });
+    await _pumpCrops(tester, fixture);
+    await tester.pumpAndSettle();
+    await _scrollToLoadMore(tester);
+    await tester.tap(find.byKey(const Key('crop-cycles-load-more')));
+    await tester.pumpAndSettle();
+    await _scrollToLoadMore(tester);
+    await tester.tap(find.byKey(const Key('crop-cycles-load-more')));
+    await tester.pumpAndSettle();
+    expect(offsets, ['0', '20', '40']);
+  });
+
+  testWidgets('delayed error from superseded farm filter is ignored', (
+    tester,
+  ) async {
+    final old = Completer<http.Response>();
+    final fixture = await _fixture((request) async {
+      if (request.url.path == '/api/v1/farms') {
+        return http.Response(
+          jsonEncode([_farm(1, 'One'), _farm(2, 'Two')]),
+          200,
+        );
+      }
+      if (request.url.queryParameters['farm_id'] == '1') return old.future;
+      if (request.url.queryParameters['farm_id'] == '2') {
+        return http.Response(jsonEncode([_crop(2, farmId: 2)]), 200);
+      }
+      return http.Response('[]', 200);
+    });
+    await _pumpCrops(tester, fixture);
+    await tester.pumpAndSettle();
+    await _selectFarm(tester, 'One (Farm #1)', settle: false);
+    await _selectFarm(tester, 'Two (Farm #2)');
+    old.complete(http.Response('{}', 500));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('crop-cycle-card-2')), findsOneWidget);
+    expect(find.byKey(const Key('crop-cycles-error')), findsNothing);
+  });
+
+  testWidgets('filtered empty state and refresh preserve the farm filter', (
+    tester,
+  ) async {
+    final queries = <Map<String, String>>[];
+    var filteredCalls = 0;
+    final fixture = await _fixture((request) async {
+      if (request.url.path == '/api/v1/farms') {
+        return http.Response(jsonEncode([_farm(5, 'Filter Farm')]), 200);
+      }
+      queries.add(request.url.queryParameters);
+      if (request.url.queryParameters['farm_id'] == '5') filteredCalls++;
+      return http.Response(
+        filteredCalls > 1 ? jsonEncode([_crop(5, farmId: 5)]) : '[]',
+        200,
+      );
+    });
+    await _pumpCrops(tester, fixture);
+    await tester.pumpAndSettle();
+    await _selectFarm(tester, 'Filter Farm (Farm #5)');
+    expect(find.text('No crop cycles found for this farm.'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('crop-cycles-refresh')));
+    await tester.pumpAndSettle();
+    expect(queries.last['farm_id'], '5');
+    expect(find.byKey(const Key('crop-cycle-card-5')), findsOneWidget);
+  });
+
+  testWidgets('missing selected farm metadata remains a valid selection', (
+    tester,
+  ) async {
+    var farmCalls = 0;
+    final fixture = await _fixture((request) async {
+      if (request.url.path == '/api/v1/farms') {
+        farmCalls++;
+        return http.Response(
+          farmCalls == 1 ? jsonEncode([_farm(6, 'Known Farm')]) : '[]',
+          200,
+        );
+      }
+      return request.url.queryParameters['farm_id'] == '6'
+          ? http.Response(jsonEncode([_crop(6, farmId: 6)]), 200)
+          : http.Response('[]', 200);
+    });
+    await _pumpCrops(tester, fixture);
+    await tester.pumpAndSettle();
+    await _selectFarm(tester, 'Known Farm (Farm #6)');
+    await tester.tap(find.byKey(const Key('farm-metadata-refresh')));
+    await tester.pumpAndSettle();
+    expect(_filterValue(tester), 6);
+    expect(find.text('Farm #6'), findsWidgets);
+    expect(find.text('This farm is unavailable.'), findsNothing);
+  });
+
+  testWidgets('account replacement rejects pending crop and farm responses', (
+    tester,
+  ) async {
+    final crops = Completer<http.Response>();
+    final farms = Completer<http.Response>();
+    final headers = <String?>[];
+    var cropCalls = 0;
+    var farmCalls = 0;
+    final fixture = await _fixture((request) {
+      headers.add(request.headers['authorization']);
+      if (request.url.path == '/api/v1/farms') {
+        farmCalls++;
+        return farms.future;
+      }
+      cropCalls++;
+      return crops.future;
+    });
+    await tester.pumpWidget(MaterialApp(home: _RouteHost(fixture: fixture)));
+    await tester.tap(find.text('Open'));
+    await tester.pump();
+    await fixture.session.establishVerified(
+      _tokens('replacement'),
+      _profile(88),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Open'), findsOneWidget);
+    crops.complete(http.Response(jsonEncode([_crop(1)]), 200));
+    farms.complete(http.Response(jsonEncode([_farm(1, 'Old Farm')]), 200));
+    await tester.pumpAndSettle();
+    expect(cropCalls, 1);
+    expect(farmCalls, 1);
+    expect(headers, everyElement('Bearer access'));
+    expect(find.byKey(const Key('crop-cycle-card-1')), findsNothing);
+  });
+
+  testWidgets('logout rejects pending initial crop and farm failures', (
+    tester,
+  ) async {
+    final crops = Completer<http.Response>();
+    final farms = Completer<http.Response>();
+    final fixture = await _fixture((request) async {
+      if (request.url.path == '/api/v1/auth/logout') {
+        return http.Response('', 204);
+      }
+      if (request.url.path == '/api/v1/farms') return farms.future;
+      return crops.future;
+    });
+    await tester.pumpWidget(MaterialApp(home: _RouteHost(fixture: fixture)));
+    await tester.tap(find.text('Open'));
+    await tester.pump();
+    await fixture.session.logout(fixture.auth);
+    await tester.pumpAndSettle();
+    expect(find.text('Open'), findsOneWidget);
+    crops.complete(http.Response('{}', 500));
+    farms.complete(http.Response('{}', 500));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('crop-cycles-error')), findsNothing);
+    expect(find.byKey(const Key('farm-metadata-error')), findsNothing);
+  });
+
+  testWidgets('logout invalidates pending crop pagination and old route', (
+    tester,
+  ) async {
+    final more = Completer<http.Response>();
+    final fixture = await _fixture((request) async {
+      if (request.url.path == '/api/v1/auth/logout') {
+        return http.Response('', 204);
+      }
+      if (request.url.path == '/api/v1/farms') return http.Response('[]', 200);
+      if (request.url.queryParameters['offset'] == '20') return more.future;
+      return http.Response(
+        jsonEncode(List.generate(20, (i) => _crop(i + 1))),
+        200,
+      );
+    });
+    await tester.pumpWidget(MaterialApp(home: _RouteHost(fixture: fixture)));
+    await tester.tap(find.text('Open'));
+    await tester.pumpAndSettle();
+    await _scrollToLoadMore(tester);
+    await tester.tap(find.byKey(const Key('crop-cycles-load-more')));
+    await tester.pump();
+    await fixture.session.logout(fixture.auth);
+    await tester.pumpAndSettle();
+    expect(find.text('Open'), findsOneWidget);
+    more.complete(http.Response('{}', 500));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('crop-cycles-load-more-error')), findsNothing);
+  });
+
+  testWidgets('terminal unauthorized response closes the protected route', (
+    tester,
+  ) async {
+    var cropCalls = 0;
+    final fixture = await _fixture((request) async {
+      if (request.url.path == '/api/v1/farms') return http.Response('[]', 200);
+      if (request.url.path == '/api/v1/auth/refresh') {
+        return _jsonResponse({
+          'access_token': 'refreshed',
+          'refresh_token': 'refresh-refreshed',
+          'token_type': 'bearer',
+          'expires_in': 1800,
+          'refresh_expires_in': 604800,
+        });
+      }
+      cropCalls++;
+      return http.Response('{}', 401);
+    });
+    await tester.pumpWidget(MaterialApp(home: _RouteHost(fixture: fixture)));
+    await tester.tap(find.text('Open'));
+    await tester.pumpAndSettle();
+    expect(cropCalls, 2);
+    expect(find.text('Open'), findsOneWidget);
+    expect(fixture.session.profile?.id, 7);
+  });
+
+  testWidgets('wide and scaled layouts retain accessible controls', (
+    tester,
+  ) async {
+    tester.platformDispatcher.textScaleFactorTestValue = 1.8;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    final fixture = await _fixture(
+      (request) async => request.url.path == '/api/v1/farms'
+          ? _jsonResponse([_farm(1, 'Wide multilingual farm')])
+          : _jsonResponse([
+              _crop(
+                1,
+                cropType: 'Long English crop name · සිංහල බෝගය · தமிழ் பயிர்',
+                variety: 'Accessible multilingual variety',
+              ),
+            ]),
+    );
+    await _pumpCrops(tester, fixture, size: const Size(1600, 1000));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.text('Active'), findsOneWidget);
+    expect(find.byTooltip('Refresh crop cycles'), findsOneWidget);
+    expect(find.byTooltip('Refresh farms'), findsOneWidget);
+    expect(find.textContaining('සිංහල'), findsOneWidget);
+    expect(find.textContaining('தமிழ்'), findsOneWidget);
+  });
+
   testWidgets('narrow layout and long multilingual values do not overflow', (
     tester,
   ) async {
@@ -453,6 +948,22 @@ Finder _cropScrollable() => find.descendant(
   of: find.byKey(const Key('crop-cycles-list')),
   matching: find.byType(Scrollable),
 );
+
+Future<void> _scrollToLoadMore(WidgetTester tester) async {
+  await tester.scrollUntilVisible(
+    find.byKey(const Key('crop-cycles-load-more')),
+    500,
+    scrollable: _cropScrollable(),
+  );
+  await tester.drag(_cropScrollable(), const Offset(0, -120));
+  await tester.pump();
+}
+
+int? _filterValue(WidgetTester tester) => tester
+    .widget<DropdownButtonFormField<int>>(
+      find.byType(DropdownButtonFormField<int>),
+    )
+    .initialValue;
 
 Future<void> _selectFarm(
   WidgetTester tester,
