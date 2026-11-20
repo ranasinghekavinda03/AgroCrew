@@ -942,6 +942,135 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.byKey(const Key('crop-cycle-card-1')), findsOneWidget);
   });
+
+  testWidgets(
+    'Add Crop Cycle entry opens with filter and cancel does not POST',
+    (tester) async {
+      var posts = 0;
+      final fixture = await _fixture((request) async {
+        if (request.method == 'POST') posts++;
+        if (request.url.path == '/api/v1/farms/2') {
+          return _jsonResponse(_farm(2, 'South Farm'));
+        }
+        if (request.url.path == '/api/v1/farms') {
+          return _jsonResponse([_farm(2, 'South Farm')]);
+        }
+        return _jsonResponse([]);
+      });
+      await _pumpCrops(tester, fixture);
+      await tester.pumpAndSettle();
+      await _selectFarm(tester, 'South Farm (Farm #2)');
+      expect(find.byKey(const Key('add-crop-cycle-button')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('add-crop-cycle-button')));
+      await tester.pumpAndSettle();
+      expect(find.text('Add Crop Cycle'), findsWidgets);
+      final farmField = tester.widget<DropdownButtonFormField<int>>(
+        find.byKey(const Key('crop-farm-field')),
+      );
+      expect(farmField.initialValue, 2);
+      await tester.tap(find.byKey(const Key('cancel-crop-cycle-button')));
+      await tester.pumpAndSettle();
+      expect(posts, 0);
+      expect(find.text('My Crop Cycles'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'confirmed create refreshes offset zero with active farm filter',
+    (tester) async {
+      var filteredGets = 0;
+      var posts = 0;
+      final fixture = await _fixture((request) async {
+        if (request.url.path == '/api/v1/farms/2') {
+          return _jsonResponse(_farm(2, 'South Farm'));
+        }
+        if (request.url.path == '/api/v1/farms') {
+          return _jsonResponse([_farm(2, 'South Farm')]);
+        }
+        if (request.method == 'POST') {
+          posts++;
+          return _jsonResponse(
+            _crop(9, farmId: 2, status: 'planned'),
+            status: 201,
+          );
+        }
+        if (request.url.queryParameters['farm_id'] == '2') filteredGets++;
+        expect(request.url.queryParameters['offset'], '0');
+        return _jsonResponse(
+          filteredGets >= 2 ? [_crop(9, farmId: 2, status: 'planned')] : [],
+        );
+      });
+      await _pumpCrops(tester, fixture);
+      await tester.pumpAndSettle();
+      await _selectFarm(tester, 'South Farm (Farm #2)');
+      await tester.tap(find.byKey(const Key('add-crop-cycle-button')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const Key('crop-type-field')),
+        'Tomato',
+      );
+      await tester.enterText(
+        find.byKey(const Key('planting-date-field')),
+        '2026-11-20',
+      );
+      final create = find.byKey(const Key('create-crop-cycle-button'));
+      await tester.ensureVisible(create);
+      await tester.tap(create);
+      await tester.pumpAndSettle();
+      expect(posts, 1);
+      expect(filteredGets, 2);
+      expect(find.byKey(const Key('crop-cycle-card-9')), findsOneWidget);
+      expect(find.text('Crop cycle created successfully.'), findsOneWidget);
+    },
+  );
+
+  testWidgets('create waits for a pending first page before refreshing', (
+    tester,
+  ) async {
+    final pendingFirstPage = Completer<http.Response>();
+    var cropGets = 0;
+    final fixture = await _fixture((request) async {
+      if (request.url.path == '/api/v1/farms') {
+        return _jsonResponse([_farm(1, 'One')]);
+      }
+      if (request.url.path == '/api/v1/farms/1') {
+        return _jsonResponse(_farm(1, 'One'));
+      }
+      if (request.method == 'POST') {
+        return _jsonResponse(
+          _crop(10, farmId: 1, status: 'planned'),
+          status: 201,
+        );
+      }
+      cropGets++;
+      if (cropGets == 1) return pendingFirstPage.future;
+      return _jsonResponse([_crop(10, farmId: 1, status: 'planned')]);
+    });
+    await _pumpCrops(tester, fixture);
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('add-crop-cycle-button')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.tap(find.byKey(const Key('crop-farm-field')));
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.tap(find.text('One (Farm #1)').last);
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.enterText(find.byKey(const Key('crop-type-field')), 'Tomato');
+    await tester.enterText(
+      find.byKey(const Key('planting-date-field')),
+      '2026-11-20',
+    );
+    final create = find.byKey(const Key('create-crop-cycle-button'));
+    await tester.ensureVisible(create);
+    await tester.tap(create);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(cropGets, 1);
+    pendingFirstPage.complete(_jsonResponse([]));
+    await tester.pumpAndSettle();
+    expect(cropGets, 2);
+    expect(find.byKey(const Key('crop-cycle-card-10')), findsOneWidget);
+  });
 }
 
 Finder _cropScrollable() => find.descendant(
