@@ -4,6 +4,7 @@ import '../../auth/data/auth_session.dart';
 import '../../farms/data/farm_service.dart';
 import '../data/crop_cycle_service.dart';
 import '../data/models/crop_cycle.dart';
+import 'add_crop_cycle_screen.dart';
 
 class MyCropCyclesScreen extends StatefulWidget {
   const MyCropCyclesScreen({
@@ -31,6 +32,7 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
   int _farmRequestSerial = 0;
   bool _routeInvalidating = false;
   bool _firstPageRequestActive = false;
+  bool _refreshAfterFirstPage = false;
   int? _firstPageRequestFarmId;
   int? _selectedFarmId;
   int _nextOffset = 0;
@@ -160,6 +162,7 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
         _firstPageRequestActive = false;
         _firstPageRequestFarmId = null;
       });
+      await _runDeferredRefresh();
     } on CropCycleException catch (error) {
       if (!_acceptCropResult(serial, farmId)) return;
       if (error.type == CropCycleFailureType.staleSession ||
@@ -183,7 +186,19 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
           _listMessage = error.message;
         }
       });
+      await _runDeferredRefresh();
     }
+  }
+
+  Future<void> _runDeferredRefresh() async {
+    if (!_refreshAfterFirstPage ||
+        !mounted ||
+        _routeInvalidating ||
+        !_sessionIsCurrent) {
+      return;
+    }
+    _refreshAfterFirstPage = false;
+    await _loadFirstPage(refresh: true);
   }
 
   Future<void> _loadMore() async {
@@ -340,11 +355,55 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
 
   String _farmLabel(int farmId) => _farmNames[farmId] ?? 'Farm #$farmId';
 
+  Future<void> _addCropCycle() async {
+    if (_routeInvalidating || !_sessionIsCurrent) return;
+    final result = await Navigator.of(context).push<AddCropCycleResult>(
+      MaterialPageRoute(
+        builder: (_) => AddCropCycleScreen(
+          cropCycleService: widget.cropCycleService,
+          farmService: widget.farmService,
+          session: widget.session,
+          initialFarmId: _selectedFarmId,
+        ),
+      ),
+    );
+    if (!mounted ||
+        result == null ||
+        _routeInvalidating ||
+        !_sessionIsCurrent) {
+      return;
+    }
+    if (_firstPageRequestActive) {
+      _refreshAfterFirstPage = true;
+    } else {
+      await _loadFirstPage(refresh: true);
+    }
+    if (!mounted || !_sessionIsCurrent || _routeInvalidating) return;
+    final created = result.cropCycle;
+    final hiddenByFilter =
+        created != null &&
+        _selectedFarmId != null &&
+        created.farmId != _selectedFarmId;
+    final message = result.uncertain
+        ? 'Crop cycle creation was not confirmed. The list was refreshed; review it before trying again.'
+        : hiddenByFilter
+        ? 'Crop cycle created, but it is hidden by the current farm filter.'
+        : 'Crop cycle created successfully.';
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
       title: const Text('My Crop Cycles'),
       actions: [
+        IconButton(
+          key: const Key('add-crop-cycle-button'),
+          tooltip: 'Add Crop Cycle',
+          onPressed: _routeInvalidating ? null : _addCropCycle,
+          icon: const Icon(Icons.add_circle_outline),
+        ),
         IconButton(
           key: const Key('crop-cycles-refresh'),
           tooltip: 'Refresh crop cycles',
