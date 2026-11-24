@@ -5,6 +5,7 @@ import '../../farms/data/farm_service.dart';
 import '../data/crop_cycle_service.dart';
 import '../data/models/crop_cycle.dart';
 import 'add_crop_cycle_screen.dart';
+import 'crop_cycle_details_screen.dart';
 
 class MyCropCyclesScreen extends StatefulWidget {
   const MyCropCyclesScreen({
@@ -373,6 +374,28 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
 
   String _farmLabel(int farmId) => _farmNames[farmId] ?? 'Farm #$farmId';
 
+  Future<void> _openCropCycle(CropCycle crop) async {
+    if (_routeInvalidating || !_sessionIsCurrent) return;
+    final refreshList = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => CropCycleDetailsScreen(
+          cropCycleService: widget.cropCycleService,
+          session: widget.session,
+          cropCycleId: crop.id,
+          knownFarmId: crop.farmId,
+          knownFarmName: _farmNames[crop.farmId],
+        ),
+      ),
+    );
+    if (!mounted ||
+        refreshList != true ||
+        _routeInvalidating ||
+        !_sessionIsCurrent) {
+      return;
+    }
+    await _loadFirstPage(refresh: true);
+  }
+
   Future<void> _addCropCycle() async {
     if (_routeInvalidating || !_sessionIsCurrent) return;
     final result = await Navigator.of(context).push<AddCropCycleResult>(
@@ -534,6 +557,7 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
               child: _CropCycleCard(
                 crop: crop,
                 farmLabel: _farmLabel(crop.farmId),
+                onTap: () => _openCropCycle(crop),
               ),
             );
           }
@@ -717,10 +741,15 @@ class _FarmFilterPanel extends StatelessWidget {
 }
 
 class _CropCycleCard extends StatelessWidget {
-  const _CropCycleCard({required this.crop, required this.farmLabel});
+  const _CropCycleCard({
+    required this.crop,
+    required this.farmLabel,
+    required this.onTap,
+  });
 
   final CropCycle crop;
   final String farmLabel;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -728,60 +757,75 @@ class _CropCycleCard extends StatelessWidget {
     final status = _statusPresentation(crop.status, theme.colorScheme);
     return Card(
       key: Key('crop-cycle-card-${crop.id}'),
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+      clipBehavior: Clip.antiAlias,
+      child: Semantics(
+        button: true,
+        label: 'View ${crop.cropType} crop cycle details',
+        child: InkWell(
+          key: Key('open-crop-cycle-${crop.id}'),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(18),
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: Text(
-                    crop.cropType,
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        crop.cropType,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleLarge,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Chip(
+                      avatar: Icon(
+                        status.icon,
+                        size: 18,
+                        color: status.foreground,
+                      ),
+                      label: Text(status.label),
+                      labelStyle: TextStyle(color: status.foreground),
+                      backgroundColor: status.background,
+                      side: BorderSide.none,
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    const SizedBox(width: 4),
+                    const Icon(Icons.chevron_right),
+                  ],
+                ),
+                if (crop.variety != null) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    crop.variety!,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.titleLarge,
+                    style: theme.textTheme.bodyLarge,
                   ),
+                ],
+                const SizedBox(height: 10),
+                _InfoLine(icon: Icons.agriculture_outlined, text: farmLabel),
+                _InfoLine(
+                  icon: Icons.event_available_outlined,
+                  text: 'Planting: ${_formatDate(crop.plantingDate)}',
                 ),
-                const SizedBox(width: 12),
-                Chip(
-                  avatar: Icon(status.icon, size: 18, color: status.foreground),
-                  label: Text(status.label),
-                  labelStyle: TextStyle(color: status.foreground),
-                  backgroundColor: status.background,
-                  side: BorderSide.none,
-                  visualDensity: VisualDensity.compact,
-                ),
+                if (crop.expectedHarvestDate != null)
+                  _InfoLine(
+                    icon: Icons.event_note_outlined,
+                    text:
+                        'Expected harvest: ${_formatDate(crop.expectedHarvestDate!)}',
+                  ),
+                if (crop.plantCount != null)
+                  _InfoLine(
+                    icon: Icons.numbers_outlined,
+                    text: 'Plant count: ${crop.plantCount}',
+                  ),
               ],
             ),
-            if (crop.variety != null) ...[
-              const SizedBox(height: 6),
-              Text(
-                crop.variety!,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.bodyLarge,
-              ),
-            ],
-            const SizedBox(height: 10),
-            _InfoLine(icon: Icons.agriculture_outlined, text: farmLabel),
-            _InfoLine(
-              icon: Icons.event_available_outlined,
-              text: 'Planting: ${_formatDate(crop.plantingDate)}',
-            ),
-            if (crop.expectedHarvestDate != null)
-              _InfoLine(
-                icon: Icons.event_note_outlined,
-                text:
-                    'Expected harvest: ${_formatDate(crop.expectedHarvestDate!)}',
-              ),
-            if (crop.plantCount != null)
-              _InfoLine(
-                icon: Icons.numbers_outlined,
-                text: 'Plant count: ${crop.plantCount}',
-              ),
-          ],
+          ),
         ),
       ),
     );
