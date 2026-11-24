@@ -376,7 +376,7 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
 
   Future<void> _openCropCycle(CropCycle crop) async {
     if (_routeInvalidating || !_sessionIsCurrent) return;
-    final refreshList = await Navigator.of(context).push<bool>(
+    final result = await Navigator.of(context).push<CropCycleDetailsResult>(
       MaterialPageRoute(
         builder: (_) => CropCycleDetailsScreen(
           cropCycleService: widget.cropCycleService,
@@ -388,12 +388,23 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
       ),
     );
     if (!mounted ||
-        refreshList != true ||
+        result == null ||
         _routeInvalidating ||
         !_sessionIsCurrent) {
       return;
     }
     await _loadFirstPage(refresh: true);
+    if (!mounted || !_sessionIsCurrent || _routeInvalidating) return;
+    final message = switch (result) {
+      CropCycleDetailsResult.updated => 'Crop cycle changes refreshed.',
+      CropCycleDetailsResult.deleted => 'Crop cycle deleted successfully.',
+      CropCycleDetailsResult.unavailable =>
+        'The unavailable crop cycle was removed from the current list.',
+      CropCycleDetailsResult.uncertain => 'The mutation outcome was not confirmed. Review the refreshed list before trying again.',
+    };
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _addCropCycle() async {
