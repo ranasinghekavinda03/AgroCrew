@@ -17,24 +17,46 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 void main() {
-  testWidgets('loads owned farms and verifies the initially selected farm', (
+  testWidgets('synchronizes a verified async initial farm into form state', (
     tester,
   ) async {
-    final requests = <String>[];
+    final remoteFarm = Completer<http.Response>();
+    final posts = <Map<String, Object?>>[];
     final fixture = await _fixture((request) async {
-      requests.add(request.url.toString());
       if (request.url.path == '/api/v1/farms/25') {
-        return _jsonResponse(_farm(25, 'Remote Farm'));
+        return remoteFarm.future;
+      }
+      if (request.method == 'POST') {
+        final payload = jsonDecode(request.body) as Map<String, Object?>;
+        posts.add(payload);
+        return _jsonResponse(_cropFromPayload(payload, id: 25), status: 201);
       }
       return _jsonResponse(
         List.generate(20, (index) => _farm(index + 1, 'Farm')),
       );
     });
     await _pumpAdd(tester, fixture, initialFarmId: 25);
+    await tester.pump();
+    await tester.pump();
+    expect(
+      tester
+          .state<FormFieldState<int>>(find.byKey(const Key('crop-farm-field')))
+          .value,
+      isNull,
+    );
+    remoteFarm.complete(_jsonResponse(_farm(25, 'Remote Farm')));
     await tester.pumpAndSettle();
     expect(find.text('Remote Farm (Farm #25)'), findsOneWidget);
-    expect(requests, contains(contains('/api/v1/farms/25')));
-    expect(requests, contains(contains('limit=20&offset=0')));
+    expect(
+      tester
+          .state<FormFieldState<int>>(find.byKey(const Key('crop-farm-field')))
+          .value,
+      25,
+    );
+    await _fillRequired(tester, selectFarm: false);
+    await _tapCreate(tester);
+    expect(posts, hasLength(1));
+    expect(posts.single['farm_id'], 25);
   });
 
   testWidgets('requires an explicit farm when no initial filter is supplied', (
@@ -131,14 +153,26 @@ void main() {
     expect(find.text('Recovered (Farm #1)'), findsOneWidget);
   });
 
-  testWidgets('unavailable initial farm is cleared safely', (tester) async {
+  testWidgets('unavailable initial farm clears visual and form state', (
+    tester,
+  ) async {
+    final unavailable = Completer<http.Response>();
     final fixture = await _fixture((request) async {
       if (request.url.path == '/api/v1/farms/99') {
-        return http.Response('{}', 404);
+        return unavailable.future;
       }
-      return _jsonResponse([_farm(1, 'Available')]);
+      return _jsonResponse([_farm(1, 'Available'), _farm(99, 'Removed')]);
     });
     await _pumpAdd(tester, fixture, initialFarmId: 99);
+    await tester.pump();
+    await tester.pump();
+    expect(
+      tester
+          .state<FormFieldState<int>>(find.byKey(const Key('crop-farm-field')))
+          .value,
+      99,
+    );
+    unavailable.complete(http.Response('{}', 404));
     await tester.pumpAndSettle();
     expect(
       find.text(
@@ -146,10 +180,21 @@ void main() {
       ),
       findsOneWidget,
     );
-    final field = tester.widget<DropdownButtonFormField<int>>(
-      find.byKey(const Key('crop-farm-field')),
+    expect(
+      tester
+          .state<FormFieldState<int>>(find.byKey(const Key('crop-farm-field')))
+          .value,
+      isNull,
     );
-    expect(field.initialValue, isNull);
+    expect(
+      tester
+          .widget<DropdownButtonFormField<int>>(
+            find.byKey(const Key('crop-farm-field')),
+          )
+          .initialValue,
+      isNull,
+    );
+    expect(find.text('Removed (Farm #99)'), findsNothing);
   });
 
   testWidgets('validates required, calendar, ordering, count, and lengths', (
@@ -374,6 +419,59 @@ void main() {
       expect(find.textContaining('private'), findsNothing);
     });
   }
+
+  testWidgets(
+    'ambiguous create blocks cancel and back then returns uncertain result',
+    (tester) async {
+      var posts = 0;
+      final fixture = await _fixture((request) async {
+        if (request.method == 'POST') {
+          posts++;
+          return http.Response('private', 500);
+        }
+        return _jsonResponse([_farm(1, 'One')]);
+      });
+      await _pumpRoute(tester, fixture);
+      await tester.tap(find.text('Open Add'));
+      await tester.pumpAndSettle();
+      await _fillRequired(tester);
+      await _tapCreate(tester);
+
+      expect(posts, 1);
+      expect(
+        tester
+            .widget<TextButton>(
+              find.byKey(const Key('cancel-crop-cycle-button')),
+            )
+            .onPressed,
+        isNull,
+      );
+      expect(
+        tester
+            .widget<OutlinedButton>(
+              find.byKey(const Key('cancel-crop-cycle-bottom-button')),
+            )
+            .onPressed,
+        isNull,
+      );
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byType(AddCropCycleScreen), findsOneWidget);
+      expect(posts, 1);
+
+      final inspect = find.byKey(const Key('inspect-crop-cycles-button'));
+      await tester.drag(
+        find.byKey(const Key('add-crop-cycle-form')),
+        const Offset(0, -200),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(inspect);
+      await tester.pumpAndSettle();
+      expect(find.byType(AddCropCycleScreen), findsNothing);
+      expect(find.text('Uncertain result'), findsOneWidget);
+      expect(posts, 1);
+    },
+  );
 
   testWidgets('synchronous submit guard allows only one pending POST', (
     tester,
@@ -677,25 +775,42 @@ class _Fixture {
   final FarmService farms;
 }
 
-class _AddRouteHost extends StatelessWidget {
+class _AddRouteHost extends StatefulWidget {
   const _AddRouteHost({required this.fixture});
 
   final _Fixture fixture;
 
   @override
+  State<_AddRouteHost> createState() => _AddRouteHostState();
+}
+
+class _AddRouteHostState extends State<_AddRouteHost> {
+  AddCropCycleResult? _result;
+
+  @override
   Widget build(BuildContext context) => Scaffold(
     body: Center(
-      child: FilledButton(
-        onPressed: () => Navigator.of(context).push<AddCropCycleResult>(
-          MaterialPageRoute(
-            builder: (_) => AddCropCycleScreen(
-              cropCycleService: fixture.crops,
-              farmService: fixture.farms,
-              session: fixture.session,
-            ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          FilledButton(
+            onPressed: () async {
+              final result = await Navigator.of(context)
+                  .push<AddCropCycleResult>(
+                    MaterialPageRoute(
+                      builder: (_) => AddCropCycleScreen(
+                        cropCycleService: widget.fixture.crops,
+                        farmService: widget.fixture.farms,
+                        session: widget.fixture.session,
+                      ),
+                    ),
+                  );
+              if (mounted) setState(() => _result = result);
+            },
+            child: const Text('Open Add'),
           ),
-        ),
-        child: const Text('Open Add'),
+          if (_result?.uncertain == true) const Text('Uncertain result'),
+        ],
       ),
     ),
   );
