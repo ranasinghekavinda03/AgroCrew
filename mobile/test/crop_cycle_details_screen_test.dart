@@ -229,6 +229,202 @@ void main() {
     expect(find.text('This crop cycle is unavailable.'), findsOneWidget);
   });
 
+  testWidgets('confirmed edit refreshes authoritative details', (tester) async {
+    var gets = 0;
+    var puts = 0;
+    final fixture = await _fixture((request) async {
+      if (request.method == 'PUT') {
+        puts++;
+        return _jsonResponse(_crop(12, cropType: 'Updated'));
+      }
+      gets++;
+      return _jsonResponse(
+        _crop(12, cropType: gets == 1 ? 'Original' : 'Updated'),
+      );
+    });
+    await _pumpDetails(tester, fixture, cropCycleId: 12);
+    await tester.pumpAndSettle();
+    final edit = find.byKey(const Key('edit-crop-cycle-button'));
+    await tester.ensureVisible(edit);
+    await tester.tap(edit);
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('edit-crop-type-field')),
+      'Updated',
+    );
+    final save = find.byKey(const Key('save-crop-cycle-changes-button'));
+    await tester.ensureVisible(save);
+    await tester.tap(save);
+    await tester.pumpAndSettle();
+    expect(puts, 1);
+    expect(gets, 2);
+    expect(find.text('Updated'), findsOneWidget);
+    expect(find.text('Crop cycle updated successfully.'), findsOneWidget);
+  });
+
+  testWidgets('delete confirmation Cancel dispatches zero DELETE requests', (
+    tester,
+  ) async {
+    var deletes = 0;
+    final fixture = await _fixture((request) async {
+      if (request.method == 'DELETE') deletes++;
+      return _jsonResponse(_crop(13));
+    });
+    await _pumpDetails(tester, fixture, cropCycleId: 13);
+    await tester.pumpAndSettle();
+    final delete = find.byKey(const Key('delete-crop-cycle-button'));
+    await tester.ensureVisible(delete);
+    await tester.tap(delete);
+    await tester.pumpAndSettle();
+    expect(find.text('Delete Crop Cycle?'), findsOneWidget);
+    expect(find.textContaining('"Tomato"'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('delete-crop-cycle-cancel')));
+    await tester.pumpAndSettle();
+    expect(deletes, 0);
+    expect(find.byKey(const Key('crop-cycle-details-content')), findsOneWidget);
+  });
+
+  testWidgets('confirmed delete dispatches once and closes Details', (
+    tester,
+  ) async {
+    var deletes = 0;
+    final fixture = await _fixture((request) async {
+      if (request.method == 'DELETE') {
+        deletes++;
+        expect(request.url.path, '/api/v1/crops/14');
+        expect(request.headers['authorization'], 'Bearer access');
+        return http.Response('', 204);
+      }
+      return _jsonResponse(_crop(14));
+    });
+    await _pumpRoute(tester, fixture);
+    await tester.tap(find.text('Open Details'));
+    await tester.pumpAndSettle();
+    await _confirmDelete(tester);
+    expect(deletes, 1);
+    expect(find.byType(CropCycleDetailsScreen), findsNothing);
+  });
+
+  testWidgets('delete conflict keeps authoritative record visible', (
+    tester,
+  ) async {
+    final fixture = await _fixture(
+      (request) async => request.method == 'DELETE'
+          ? http.Response('{"detail":"private"}', 409)
+          : _jsonResponse(_crop(16)),
+    );
+    await _pumpDetails(tester, fixture, cropCycleId: 16);
+    await tester.pumpAndSettle();
+    await _confirmDelete(tester);
+    expect(
+      find.text(
+        'This crop cycle cannot be deleted because it has related records.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.textContaining('private'), findsNothing);
+    expect(find.text('Tomato'), findsOneWidget);
+    expect(find.byKey(const Key('delete-crop-cycle-button')), findsOneWidget);
+  });
+
+  testWidgets('delete validation rejection is safe and remains actionable', (
+    tester,
+  ) async {
+    final fixture = await _fixture(
+      (request) async => request.method == 'DELETE'
+          ? http.Response('{"detail":"private"}', 422)
+          : _jsonResponse(_crop(16)),
+    );
+    await _pumpDetails(tester, fixture, cropCycleId: 16);
+    await tester.pumpAndSettle();
+    await _confirmDelete(tester);
+    expect(
+      find.text('Please review the crop cycle information and try again.'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('private'), findsNothing);
+    expect(find.byKey(const Key('delete-crop-cycle-button')), findsOneWidget);
+  });
+
+  testWidgets('delete 404 transitions to safe unavailable recovery', (
+    tester,
+  ) async {
+    final fixture = await _fixture(
+      (request) async => request.method == 'DELETE'
+          ? http.Response('{}', 404)
+          : _jsonResponse(_crop(17)),
+    );
+    await _pumpDetails(tester, fixture, cropCycleId: 17);
+    await tester.pumpAndSettle();
+    await _confirmDelete(tester);
+    expect(find.text('This crop cycle is unavailable.'), findsOneWidget);
+    expect(
+      find.byKey(const Key('return-to-crop-cycles-button')),
+      findsOneWidget,
+    );
+  });
+
+  for (final scenario in ['server', 'network', 'timeout', 'unexpected']) {
+    testWidgets('$scenario delete is ambiguous and requires inspection', (
+      tester,
+    ) async {
+      var deletes = 0;
+      var gets = 0;
+      final fixture = await _fixture((request) async {
+        if (request.method == 'GET') {
+          gets++;
+          return _jsonResponse(_crop(18));
+        }
+        deletes++;
+        if (scenario == 'server') return http.Response('private', 500);
+        if (scenario == 'network') throw http.ClientException('private');
+        if (scenario == 'timeout') return Completer<http.Response>().future;
+        return http.Response('{}', 200);
+      });
+      await _pumpDetails(tester, fixture, cropCycleId: 18);
+      await tester.pumpAndSettle();
+      await _confirmDelete(tester);
+      expect(deletes, 1);
+      expect(find.textContaining('could not be confirmed'), findsOneWidget);
+      expect(find.textContaining('private'), findsNothing);
+      expect(find.byKey(const Key('delete-crop-cycle-button')), findsNothing);
+      await tester.tap(find.byKey(const Key('inspect-after-delete-button')));
+      await tester.pumpAndSettle();
+      expect(gets, 2);
+      expect(find.byKey(const Key('delete-crop-cycle-button')), findsOneWidget);
+      expect(deletes, 1);
+    });
+  }
+
+  testWidgets('account replacement during DELETE ignores old completion', (
+    tester,
+  ) async {
+    final pending = Completer<http.Response>();
+    final fixture = await _fixture(
+      (request) async => request.method == 'DELETE'
+          ? pending.future
+          : _jsonResponse(_crop(14)),
+    );
+    await _pumpRoute(tester, fixture);
+    await tester.tap(find.text('Open Details'));
+    await tester.pumpAndSettle();
+    final delete = find.byKey(const Key('delete-crop-cycle-button'));
+    await tester.ensureVisible(delete);
+    await tester.tap(delete);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('delete-crop-cycle-confirm')));
+    await tester.pump();
+    await fixture.session.establishVerified(
+      _tokens('replacement'),
+      _profile(8),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(CropCycleDetailsScreen), findsNothing);
+    pending.complete(http.Response('', 204));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('account replacement closes route and ignores pending success', (
     tester,
   ) async {
@@ -390,7 +586,20 @@ Future<void> _pumpDetails(
 }
 
 Future<void> _pumpRoute(WidgetTester tester, _Fixture fixture) async {
+  tester.view.physicalSize = const Size(900, 1400);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
   await tester.pumpWidget(MaterialApp(home: _DetailsHost(fixture: fixture)));
+}
+
+Future<void> _confirmDelete(WidgetTester tester) async {
+  final delete = find.byKey(const Key('delete-crop-cycle-button'));
+  await tester.ensureVisible(delete);
+  await tester.tap(delete);
+  await tester.pumpAndSettle();
+  await tester.tap(find.byKey(const Key('delete-crop-cycle-confirm')));
+  await tester.pumpAndSettle();
 }
 
 Future<_Fixture> _fixture(MockClientHandler handler) async {
