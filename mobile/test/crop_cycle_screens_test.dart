@@ -1039,6 +1039,104 @@ void main() {
     expect(find.text('No crop cycles yet.'), findsOneWidget);
   });
 
+  testWidgets('confirmed edit refreshes the active filtered list', (
+    tester,
+  ) async {
+    var listGets = 0;
+    var detailGets = 0;
+    var puts = 0;
+    final fixture = await _fixture((request) async {
+      if (request.url.path == '/api/v1/farms') {
+        return _jsonResponse([_farm(2, 'South Farm')]);
+      }
+      if (request.url.path == '/api/v1/crops/41') {
+        if (request.method == 'PUT') {
+          puts++;
+          return _jsonResponse(
+            _crop(41, farmId: 2, cropType: 'Updated Tomato'),
+          );
+        }
+        detailGets++;
+        return _jsonResponse(
+          _crop(
+            41,
+            farmId: 2,
+            cropType: detailGets == 1 ? 'Old Tomato' : 'Updated Tomato',
+          ),
+        );
+      }
+      listGets++;
+      return _jsonResponse([
+        _crop(
+          41,
+          farmId: 2,
+          cropType: listGets < 3 ? 'Old Tomato' : 'Updated Tomato',
+        ),
+      ]);
+    });
+    await _pumpCrops(tester, fixture);
+    await tester.pumpAndSettle();
+    await _selectFarm(tester, 'South Farm (Farm #2)');
+    await tester.tap(find.byKey(const Key('open-crop-cycle-41')));
+    await tester.pumpAndSettle();
+    final edit = find.byKey(const Key('edit-crop-cycle-button'));
+    await tester.ensureVisible(edit);
+    await tester.tap(edit);
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const Key('edit-crop-type-field')),
+      'Updated Tomato',
+    );
+    final save = find.byKey(const Key('save-crop-cycle-changes-button'));
+    await tester.ensureVisible(save);
+    await tester.tap(save);
+    await tester.pumpAndSettle();
+    expect(puts, 1);
+    expect(detailGets, 2);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    expect(_filterValue(tester), 2);
+    expect(find.text('Updated Tomato'), findsOneWidget);
+    expect(find.text('Crop cycle changes refreshed.'), findsOneWidget);
+    expect(listGets, 3);
+  });
+
+  testWidgets('confirmed delete refreshes filtered list and removes card', (
+    tester,
+  ) async {
+    var listGets = 0;
+    var deletes = 0;
+    final fixture = await _fixture((request) async {
+      if (request.url.path == '/api/v1/farms') {
+        return _jsonResponse([_farm(2, 'South Farm')]);
+      }
+      if (request.url.path == '/api/v1/crops/42') {
+        if (request.method == 'DELETE') {
+          deletes++;
+          return http.Response('', 204);
+        }
+        return _jsonResponse(_crop(42, farmId: 2));
+      }
+      listGets++;
+      return _jsonResponse(listGets < 3 ? [_crop(42, farmId: 2)] : []);
+    });
+    await _pumpCrops(tester, fixture);
+    await tester.pumpAndSettle();
+    await _selectFarm(tester, 'South Farm (Farm #2)');
+    await tester.tap(find.byKey(const Key('open-crop-cycle-42')));
+    await tester.pumpAndSettle();
+    final delete = find.byKey(const Key('delete-crop-cycle-button'));
+    await tester.ensureVisible(delete);
+    await tester.tap(delete);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('delete-crop-cycle-confirm')));
+    await tester.pumpAndSettle();
+    expect(deletes, 1);
+    expect(_filterValue(tester), 2);
+    expect(find.byKey(const Key('crop-cycle-card-42')), findsNothing);
+    expect(find.text('Crop cycle deleted successfully.'), findsOneWidget);
+  });
+
   testWidgets(
     'confirmed create refreshes offset zero with active farm filter',
     (tester) async {
