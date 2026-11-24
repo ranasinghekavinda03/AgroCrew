@@ -56,6 +56,7 @@ class _AddCropCycleScreenState extends State<AddCropCycleScreen> {
   bool _routeInvalidating = false;
   bool _submitting = false;
   bool _ambiguous = false;
+  bool _returningForInspection = false;
   CropStatus _status = CropStatus.planned;
   String? _farmError;
   String? _submitError;
@@ -335,7 +336,7 @@ class _AddCropCycleScreenState extends State<AddCropCycleScreen> {
         _submitting = false;
         _ambiguous = error.type == CropCycleFailureType.ambiguousCreation;
         _submitError = _ambiguous
-            ? 'The create outcome could not be confirmed. Return to My Crop Cycles and refresh the list before trying again.'
+            ? 'The create outcome could not be confirmed. To avoid a duplicate, Cancel and Back are unavailable. Return to My Crop Cycles and inspect the list before trying again.'
             : error.message;
       });
     } on Object {
@@ -348,19 +349,29 @@ class _AddCropCycleScreenState extends State<AddCropCycleScreen> {
   }
 
   void _cancel() {
-    if (!_submitting) Navigator.of(context).pop();
+    if (!_submitting && !_ambiguous) Navigator.of(context).pop();
+  }
+
+  void _returnForInspection() {
+    if (_returningForInspection) return;
+    setState(() => _returningForInspection = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        Navigator.of(context).pop(const AddCropCycleResult.uncertain());
+      }
+    });
   }
 
   @override
   Widget build(BuildContext context) => PopScope(
-    canPop: !_submitting,
+    canPop: !_submitting && (!_ambiguous || _returningForInspection),
     child: Scaffold(
       appBar: AppBar(
         title: const Text('Add Crop Cycle'),
         actions: [
           TextButton(
             key: const Key('cancel-crop-cycle-button'),
-            onPressed: _submitting ? null : _cancel,
+            onPressed: _submitting || _ambiguous ? null : _cancel,
             child: const Text('Cancel'),
           ),
         ],
@@ -498,9 +509,9 @@ class _AddCropCycleScreenState extends State<AddCropCycleScreen> {
                       if (_ambiguous)
                         FilledButton.icon(
                           key: const Key('inspect-crop-cycles-button'),
-                          onPressed: () =>
-                              Navigator.of(context)
-                                  .pop(const AddCropCycleResult.uncertain()),
+                          onPressed: _returningForInspection
+                              ? null
+                              : _returnForInspection,
                           icon: const Icon(Icons.list_alt_outlined),
                           label: const Text('Return to My Crop Cycles'),
                         )
@@ -523,7 +534,7 @@ class _AddCropCycleScreenState extends State<AddCropCycleScreen> {
                       const SizedBox(height: 12),
                       OutlinedButton(
                         key: const Key('cancel-crop-cycle-bottom-button'),
-                        onPressed: _submitting ? null : _cancel,
+                        onPressed: _submitting || _ambiguous ? null : _cancel,
                         child: const Text('Cancel'),
                       ),
                     ],
@@ -569,39 +580,45 @@ class _AddCropCycleScreenState extends State<AddCropCycleScreen> {
     }
     final farms = _farms.values.toList(growable: false)
       ..sort((a, b) => a.id.compareTo(b.id));
+    final selectedFarmId = _farms.containsKey(_selectedFarmId)
+        ? _selectedFarmId
+        : null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        DropdownButtonFormField<int>(
-          key: const Key('crop-farm-field'),
-          initialValue: _farms.containsKey(_selectedFarmId)
-              ? _selectedFarmId
-              : null,
-          isExpanded: true,
-          validator: (value) => value == null ? 'Choose a farm.' : null,
-          decoration: const InputDecoration(
-            labelText: 'Farm *',
-            border: OutlineInputBorder(),
-          ),
-          hint: Text(
-            _initialFarmChecking ? 'Checking selected farm...' : 'Choose farm',
-          ),
-          items: [
-            for (final farm in farms)
-              DropdownMenuItem(
-                value: farm.id,
-                child: Text(
-                  '${farm.name} (Farm #${farm.id})',
-                  overflow: TextOverflow.ellipsis,
+        KeyedSubtree(
+          key: ValueKey('crop-farm-selection-$selectedFarmId'),
+          child: DropdownButtonFormField<int>(
+            key: const Key('crop-farm-field'),
+            initialValue: selectedFarmId,
+            isExpanded: true,
+            validator: (value) => value == null ? 'Choose a farm.' : null,
+            decoration: const InputDecoration(
+              labelText: 'Farm *',
+              border: OutlineInputBorder(),
+            ),
+            hint: Text(
+              _initialFarmChecking
+                  ? 'Checking selected farm...'
+                  : 'Choose farm',
+            ),
+            items: [
+              for (final farm in farms)
+                DropdownMenuItem(
+                  value: farm.id,
+                  child: Text(
+                    '${farm.name} (Farm #${farm.id})',
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
-              ),
-          ],
-          onChanged: _submitting || _initialFarmChecking
-              ? null
-              : (value) => setState(() {
-                  _selectedFarmId = value;
-                  _submitError = null;
-                }),
+            ],
+            onChanged: _submitting || _initialFarmChecking
+                ? null
+                : (value) => setState(() {
+                    _selectedFarmId = value;
+                    _submitError = null;
+                  }),
+          ),
         ),
         if (_farmError != null) ...[
           const SizedBox(height: 8),
