@@ -976,6 +976,70 @@ void main() {
   );
 
   testWidgets(
+    'crop card opens authoritative details and Back preserves filter and list',
+    (tester) async {
+      var detailGets = 0;
+      final fixture = await _fixture((request) async {
+        if (request.url.path == '/api/v1/farms') {
+          return _jsonResponse([_farm(2, 'South Farm')]);
+        }
+        if (request.url.path == '/api/v1/crops/21') {
+          detailGets++;
+          expect(request.method, 'GET');
+          expect(request.headers['authorization'], 'Bearer access');
+          return _jsonResponse(
+            _crop(21, farmId: 2, status: 'planned', cropType: 'Authoritative'),
+          );
+        }
+        return _jsonResponse([
+          _crop(21, farmId: 2, status: 'active', cropType: 'Cached'),
+        ]);
+      });
+      await _pumpCrops(tester, fixture);
+      await tester.pumpAndSettle();
+      await _selectFarm(tester, 'South Farm (Farm #2)');
+      await tester.tap(find.byKey(const Key('open-crop-cycle-21')));
+      await tester.pumpAndSettle();
+
+      expect(detailGets, 1);
+      expect(find.text('Crop Cycle Details'), findsOneWidget);
+      expect(find.text('Authoritative'), findsOneWidget);
+      expect(find.text('South Farm (Farm #2)'), findsOneWidget);
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(_filterValue(tester), 2);
+      expect(find.byKey(const Key('crop-cycle-card-21')), findsOneWidget);
+      expect(find.text('Cached'), findsOneWidget);
+    },
+  );
+
+  testWidgets('unavailable details return refreshes the filtered parent list', (
+    tester,
+  ) async {
+    var listGets = 0;
+    final fixture = await _fixture((request) async {
+      if (request.url.path == '/api/v1/farms') {
+        return _jsonResponse([_farm(3, 'West Farm')]);
+      }
+      if (request.url.path == '/api/v1/crops/31') {
+        return http.Response('{"detail":"private"}', 404);
+      }
+      listGets++;
+      return _jsonResponse(listGets == 1 ? [_crop(31, farmId: 3)] : []);
+    });
+    await _pumpCrops(tester, fixture);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('open-crop-cycle-31')));
+    await tester.pumpAndSettle();
+    expect(find.text('This crop cycle is unavailable.'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('return-to-crop-cycles-button')));
+    await tester.pumpAndSettle();
+    expect(listGets, 2);
+    expect(find.byKey(const Key('crop-cycle-card-31')), findsNothing);
+    expect(find.text('No crop cycles yet.'), findsOneWidget);
+  });
+
+  testWidgets(
     'confirmed create refreshes offset zero with active farm filter',
     (tester) async {
       var filteredGets = 0;
@@ -1088,8 +1152,7 @@ void main() {
         if (request.url.path == '/api/v1/farms') {
           return _jsonResponse(farmCreated ? [_farm(8, 'Recovery Farm')] : []);
         }
-        if (request.url.path == '/api/v1/crops' &&
-            request.method == 'POST') {
+        if (request.url.path == '/api/v1/crops' && request.method == 'POST') {
           cropPosts++;
           cropCreated = true;
           return _jsonResponse(
