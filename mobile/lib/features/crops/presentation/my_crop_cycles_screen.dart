@@ -44,6 +44,7 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
   bool _farmLoading = false;
   bool _farmLoadingMore = false;
   bool _farmHasMore = false;
+  bool _refreshFarmsAfterCurrentPage = false;
   String? _initialError;
   CropCycleFailureType? _initialErrorType;
   String? _listMessage;
@@ -99,6 +100,7 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
         _loadingMore = false;
         _farmLoading = false;
         _farmLoadingMore = false;
+        _refreshFarmsAfterCurrentPage = false;
         _failedFarmRequestKind = null;
         _failedFarmOffset = null;
       });
@@ -293,10 +295,13 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
   }
 
   Future<void> _loadFarmPage(_FarmRequestKind kind, {int? retryOffset}) async {
-    if (_routeInvalidating ||
-        !_sessionIsCurrent ||
-        _farmLoading ||
-        _farmLoadingMore) {
+    if (_routeInvalidating || !_sessionIsCurrent) {
+      return;
+    }
+    if (_farmLoading || _farmLoadingMore) {
+      if (kind == _FarmRequestKind.refresh) {
+        _refreshFarmsAfterCurrentPage = true;
+      }
       return;
     }
     final reset = kind != _FarmRequestKind.more;
@@ -330,6 +335,7 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
         _failedFarmRequestKind = null;
         _failedFarmOffset = null;
       });
+      await _runDeferredFarmRefresh();
     } on FarmException catch (error) {
       if (!_acceptFarmResult(serial)) return;
       if (error.type == FarmFailureType.staleSession ||
@@ -344,7 +350,19 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
         _failedFarmRequestKind = kind;
         _failedFarmOffset = offset;
       });
+      await _runDeferredFarmRefresh();
     }
+  }
+
+  Future<void> _runDeferredFarmRefresh() async {
+    if (!_refreshFarmsAfterCurrentPage ||
+        !mounted ||
+        _routeInvalidating ||
+        !_sessionIsCurrent) {
+      return;
+    }
+    _refreshFarmsAfterCurrentPage = false;
+    await _loadFarmPage(_FarmRequestKind.refresh);
   }
 
   void _retryFarmPage() {
@@ -373,11 +391,13 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
         !_sessionIsCurrent) {
       return;
     }
+    final farmRefresh = _loadFarmPage(_FarmRequestKind.refresh);
     if (_firstPageRequestActive) {
       _refreshAfterFirstPage = true;
     } else {
       await _loadFirstPage(refresh: true);
     }
+    await farmRefresh;
     if (!mounted || !_sessionIsCurrent || _routeInvalidating) return;
     final created = result.cropCycle;
     final hiddenByFilter =
@@ -385,7 +405,7 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
         _selectedFarmId != null &&
         created.farmId != _selectedFarmId;
     final message = result.uncertain
-        ? 'Crop cycle creation was not confirmed. The list was refreshed; review it before trying again.'
+        ? 'Crop cycle creation was not confirmed. Review My Crop Cycles before trying again.'
         : hiddenByFilter
         ? 'Crop cycle created, but it is hidden by the current farm filter.'
         : 'Crop cycle created successfully.';
