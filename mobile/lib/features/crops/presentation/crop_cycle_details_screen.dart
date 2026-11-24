@@ -3,6 +3,9 @@ import 'package:flutter/material.dart';
 import '../../auth/data/auth_session.dart';
 import '../data/crop_cycle_service.dart';
 import '../data/models/crop_cycle.dart';
+import 'edit_crop_cycle_screen.dart';
+
+enum CropCycleDetailsResult { updated, deleted, unavailable, uncertain }
 
 class CropCycleDetailsScreen extends StatefulWidget {
   const CropCycleDetailsScreen({
@@ -33,6 +36,11 @@ class _CropCycleDetailsScreenState extends State<CropCycleDetailsScreen> {
   bool _loading = true;
   bool _refreshing = false;
   bool _routeInvalidating = false;
+  bool _deleting = false;
+  bool _uncertainDeletion = false;
+  bool _returningResult = false;
+  String? _mutationError;
+  CropCycleDetailsResult? _pendingResult;
 
   @override
   void initState() {
@@ -76,6 +84,9 @@ class _CropCycleDetailsScreenState extends State<CropCycleDetailsScreen> {
         _errorType = null;
         _loading = true;
         _refreshing = false;
+        _deleting = false;
+        _uncertainDeletion = false;
+        _mutationError = null;
       });
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -117,6 +128,8 @@ class _CropCycleDetailsScreenState extends State<CropCycleDetailsScreen> {
         _crop = crop;
         _loading = false;
         _refreshing = false;
+        _uncertainDeletion = false;
+        _mutationError = null;
       });
     } on CropCycleException catch (error) {
       if (!_acceptResult(serial)) return;
@@ -126,7 +139,10 @@ class _CropCycleDetailsScreenState extends State<CropCycleDetailsScreen> {
         return;
       }
       setState(() {
-        if (error.type == CropCycleFailureType.notFound) _crop = null;
+        if (error.type == CropCycleFailureType.notFound) {
+          _crop = null;
+          _pendingResult ??= CropCycleDetailsResult.unavailable;
+        }
         _loading = false;
         _refreshing = false;
         _errorType = error.type;
@@ -145,31 +161,172 @@ class _CropCycleDetailsScreenState extends State<CropCycleDetailsScreen> {
     }
   }
 
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: const Text('Crop Cycle Details'),
-      actions: [
-        IconButton(
-          key: const Key('crop-cycle-details-refresh'),
-          tooltip: 'Refresh crop cycle details',
-          onPressed: _routeInvalidating || widget.cropCycleId <= 0
-              ? null
-              : _load,
-          icon: _refreshing
-              ? const SizedBox.square(
-                  dimension: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.refresh),
+  Future<void> _edit() async {
+    final crop = _crop;
+    if (crop == null ||
+        _deleting ||
+        _uncertainDeletion ||
+        _routeInvalidating ||
+        !_sessionIsCurrent) {
+      return;
+    }
+    final result = await Navigator.of(context).push<EditCropCycleResult>(
+      MaterialPageRoute(
+        builder: (_) => EditCropCycleScreen(
+          cropCycleService: widget.cropCycleService,
+          session: widget.session,
+          cropCycle: crop,
+          farmLabel: _farmLabel(crop),
         ),
-      ],
-    ),
-    body: SafeArea(
-      child: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 760),
-          child: _body(),
+      ),
+    );
+    if (!mounted ||
+        result == null ||
+        _routeInvalidating ||
+        !_sessionIsCurrent) {
+      return;
+    }
+    switch (result.outcome) {
+      case EditCropCycleOutcome.confirmed:
+        setState(() {
+          _crop = result.cropCycle!;
+          _pendingResult = CropCycleDetailsResult.updated;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Crop cycle updated successfully.')),
+        );
+      case EditCropCycleOutcome.uncertain:
+        setState(() => _pendingResult = CropCycleDetailsResult.uncertain);
+      case EditCropCycleOutcome.unavailable:
+        setState(() => _pendingResult = CropCycleDetailsResult.unavailable);
+    }
+    await _load();
+  }
+
+  Future<void> _confirmDelete() async {
+    final crop = _crop;
+    if (crop == null ||
+        _deleting ||
+        _uncertainDeletion ||
+        _routeInvalidating ||
+        !_sessionIsCurrent) {
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Crop Cycle?'),
+        content: Text(
+          'Delete the "${crop.cropType}" CropCycle record? This removes this CropCycle record and cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            key: const Key('delete-crop-cycle-cancel'),
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('delete-crop-cycle-confirm'),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Delete Crop Cycle'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true ||
+        !mounted ||
+        _deleting ||
+        !_sessionIsCurrent ||
+        _routeInvalidating) {
+      return;
+    }
+    setState(() {
+      _deleting = true;
+      _mutationError = null;
+    });
+    try {
+      await widget.cropCycleService.deleteCropCycle(widget.cropCycleId);
+      if (!mounted || !_sessionIsCurrent || _routeInvalidating) return;
+      setState(() => _deleting = false);
+      _returnWithResult(CropCycleDetailsResult.deleted);
+    } on CropCycleException catch (error) {
+      if (!mounted || !_sessionIsCurrent || _routeInvalidating) return;
+      if (error.type == CropCycleFailureType.unauthorized ||
+          error.type == CropCycleFailureType.staleSession) {
+        _invalidateProtectedRoute();
+        return;
+      }
+      setState(() {
+        _deleting = false;
+        if (error.type == CropCycleFailureType.notFound) {
+          _crop = null;
+          _errorType = CropCycleFailureType.notFound;
+          _error = 'This crop cycle is unavailable.';
+          _pendingResult = CropCycleDetailsResult.unavailable;
+          _mutationError = null;
+        } else if (error.type == CropCycleFailureType.ambiguousDeletion) {
+          _uncertainDeletion = true;
+          _pendingResult = CropCycleDetailsResult.uncertain;
+          _mutationError = 'The deletion outcome could not be confirmed. Refresh authoritative details or return to My Crop Cycles for inspection before trying again.';
+        } else {
+          _mutationError = error.message;
+        }
+      });
+    } on Object {
+      if (!mounted || !_sessionIsCurrent || _routeInvalidating) return;
+      setState(() {
+        _deleting = false;
+        _mutationError = 'AgroCrew could not delete the crop cycle. Try again.';
+      });
+    }
+  }
+
+  void _returnWithResult(CropCycleDetailsResult result) {
+    if (_returningResult) return;
+    setState(() => _returningResult = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) Navigator.of(context).pop(result);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => PopScope(
+    canPop: !_deleting && (_pendingResult == null || _returningResult),
+    onPopInvokedWithResult: (didPop, result) {
+      if (!didPop && !_deleting && _pendingResult != null) {
+        _returnWithResult(_pendingResult!);
+      }
+    },
+    child: Scaffold(
+      appBar: AppBar(
+        title: const Text('Crop Cycle Details'),
+        actions: [
+          IconButton(
+            key: const Key('crop-cycle-details-refresh'),
+            tooltip: 'Refresh crop cycle details',
+            onPressed:
+                _routeInvalidating || widget.cropCycleId <= 0 || _deleting
+                ? null
+                : _load,
+            icon: _refreshing
+                ? const SizedBox.square(
+                    dimension: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 760),
+            child: _body(),
+          ),
         ),
       ),
     ),
@@ -226,7 +383,9 @@ class _CropCycleDetailsScreenState extends State<CropCycleDetailsScreen> {
                 if (unavailable)
                   FilledButton.icon(
                     key: const Key('return-to-crop-cycles-button'),
-                    onPressed: () => Navigator.of(context).pop(true),
+                    onPressed: () => _returnWithResult(
+                      _pendingResult ?? CropCycleDetailsResult.unavailable,
+                    ),
                     icon: const Icon(Icons.arrow_back),
                     label: const Text('Return to My Crop Cycles'),
                   )
@@ -301,6 +460,18 @@ class _CropCycleDetailsScreenState extends State<CropCycleDetailsScreen> {
             const SizedBox(height: 12),
             _InlineError(message: _error!, onRetry: _load),
           ],
+          if (_mutationError != null) ...[
+            const SizedBox(height: 12),
+            Material(
+              key: const Key('crop-cycle-mutation-error'),
+              color: Theme.of(context).colorScheme.errorContainer,
+              borderRadius: BorderRadius.circular(12),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(_mutationError!),
+              ),
+            ),
+          ],
           const SizedBox(height: 12),
           _SectionCard(
             title: 'Crop information',
@@ -351,6 +522,46 @@ class _CropCycleDetailsScreenState extends State<CropCycleDetailsScreen> {
               ),
             ],
           ),
+          const SizedBox(height: 12),
+          if (_uncertainDeletion) ...[
+            FilledButton.icon(
+              key: const Key('inspect-after-delete-button'),
+              onPressed: _refreshing ? null : _load,
+              icon: const Icon(Icons.manage_search_outlined),
+              label: const Text('Refresh Authoritative Details'),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              key: const Key('return-after-uncertain-delete-button'),
+              onPressed: () =>
+                  _returnWithResult(CropCycleDetailsResult.uncertain),
+              icon: const Icon(Icons.arrow_back),
+              label: const Text('Return to My Crop Cycles'),
+            ),
+          ] else ...[
+            FilledButton.icon(
+              key: const Key('edit-crop-cycle-button'),
+              onPressed: _deleting || _refreshing ? null : _edit,
+              icon: const Icon(Icons.edit_outlined),
+              label: const Text('Edit Crop Cycle'),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              key: const Key('delete-crop-cycle-button'),
+              onPressed: _deleting || _refreshing ? null : _confirmDelete,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Theme.of(context).colorScheme.error,
+                side: BorderSide(color: Theme.of(context).colorScheme.error),
+              ),
+              icon: _deleting
+                  ? const SizedBox.square(
+                      dimension: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.delete_outline),
+              label: Text(_deleting ? 'Deleting...' : 'Delete Crop Cycle'),
+            ),
+          ],
         ],
       ),
     );
