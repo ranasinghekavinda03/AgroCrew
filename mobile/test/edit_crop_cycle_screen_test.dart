@@ -252,6 +252,29 @@ void main() {
     });
   }
 
+  testWidgets('unexpected post-dispatch PUT exception requires inspection', (
+    tester,
+  ) async {
+    var puts = 0;
+    final fixture = await _fixture((request) async {
+      puts++;
+      throw StateError('private transport detail');
+    });
+    await _pumpHost(tester, fixture);
+    await tester.tap(find.text('Open Edit'));
+    await tester.pumpAndSettle();
+    await _tapSave(tester);
+
+    expect(puts, 1);
+    expect(find.byKey(const Key('inspect-crop-cycle-button')), findsOneWidget);
+    expect(find.textContaining('could not be confirmed'), findsOneWidget);
+    expect(find.textContaining('private transport detail'), findsNothing);
+    expect(
+      find.byKey(const Key('save-crop-cycle-changes-button')),
+      findsNothing,
+    );
+  });
+
   testWidgets('404 requires unavailable inspection result', (tester) async {
     final fixture = await _fixture((_) async => http.Response('{}', 404));
     await _pumpHost(tester, fixture);
