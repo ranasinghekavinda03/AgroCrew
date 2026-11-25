@@ -1138,6 +1138,65 @@ void main() {
   });
 
   testWidgets(
+    'details result queues one filtered refresh behind an active one',
+    (tester) async {
+      final staleRefresh = Completer<http.Response>();
+      final currentRefresh = Completer<http.Response>();
+      var filteredGets = 0;
+      var deletes = 0;
+      final fixture = await _fixture((request) async {
+        if (request.url.path == '/api/v1/farms') {
+          return _jsonResponse([_farm(2, 'South Farm')]);
+        }
+        if (request.url.path == '/api/v1/crops/43') {
+          if (request.method == 'DELETE') {
+            deletes++;
+            return http.Response('', 204);
+          }
+          return _jsonResponse(_crop(43, farmId: 2));
+        }
+        if (request.url.queryParameters['farm_id'] == '2') {
+          filteredGets++;
+          expect(request.url.queryParameters['offset'], '0');
+          if (filteredGets == 2) return staleRefresh.future;
+          if (filteredGets == 3) return currentRefresh.future;
+          return _jsonResponse([_crop(43, farmId: 2)]);
+        }
+        return _jsonResponse([_crop(43, farmId: 2)]);
+      }, timeout: const Duration(seconds: 10));
+      await _pumpCrops(tester, fixture);
+      await tester.pumpAndSettle();
+      await _selectFarm(tester, 'South Farm (Farm #2)');
+
+      await tester.tap(find.byKey(const Key('crop-cycles-refresh')));
+      await tester.pump();
+      expect(filteredGets, 2);
+      await tester.tap(find.byKey(const Key('open-crop-cycle-43')));
+      await tester.pumpAndSettle();
+      final delete = find.byKey(const Key('delete-crop-cycle-button'));
+      await tester.ensureVisible(delete);
+      await tester.tap(delete);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('delete-crop-cycle-confirm')));
+      await tester.pump();
+      expect(deletes, 1);
+      expect(filteredGets, 2);
+
+      staleRefresh.complete(_jsonResponse([_crop(43, farmId: 2)]));
+      await tester.pump();
+      expect(filteredGets, 3);
+      expect(find.text('Crop cycle deleted successfully.'), findsNothing);
+
+      currentRefresh.complete(_jsonResponse([]));
+      await tester.pumpAndSettle();
+      expect(filteredGets, 3);
+      expect(_filterValue(tester), 2);
+      expect(find.byKey(const Key('crop-cycle-card-43')), findsNothing);
+      expect(find.text('Crop cycle deleted successfully.'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
     'confirmed create refreshes offset zero with active farm filter',
     (tester) async {
       var filteredGets = 0;
@@ -1375,12 +1434,12 @@ Future<void> _pump(
   await tester.pumpWidget(MaterialApp(home: child));
 }
 
-Future<_Fixture> _fixture(MockClientHandler handler) async {
+Future<_Fixture> _fixture(
+  MockClientHandler handler, {
+  Duration timeout = const Duration(seconds: 1),
+}) async {
   final now = DateTime.utc(2026, 11, 19, 12);
-  final client = ApiClient(
-    client: MockClient(handler),
-    timeout: const Duration(seconds: 1),
-  );
+  final client = ApiClient(client: MockClient(handler), timeout: timeout);
   final auth = AuthService(client, clock: () => now);
   final session = AuthSession(
     tokenStore: MemoryAuthTokenStore(),
