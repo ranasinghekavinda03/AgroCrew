@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../auth/data/auth_session.dart';
@@ -34,6 +36,7 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
   bool _routeInvalidating = false;
   bool _firstPageRequestActive = false;
   bool _refreshAfterFirstPage = false;
+  Completer<void>? _deferredFirstPageRefresh;
   int? _firstPageRequestFarmId;
   int? _selectedFarmId;
   int _nextOffset = 0;
@@ -68,6 +71,7 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
     _cropRequestSerial += 1;
     _farmRequestSerial += 1;
     widget.session.removeListener(_sessionChanged);
+    _completeDeferredFirstPageRefresh();
     super.dispose();
   }
 
@@ -84,6 +88,7 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
     _routeInvalidating = true;
     _cropRequestSerial += 1;
     _farmRequestSerial += 1;
+    _completeDeferredFirstPageRefresh();
     if (mounted) {
       setState(() {
         _crops.clear();
@@ -198,10 +203,31 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
         !mounted ||
         _routeInvalidating ||
         !_sessionIsCurrent) {
+      if (_routeInvalidating || !_sessionIsCurrent) {
+        _completeDeferredFirstPageRefresh();
+      }
       return;
     }
     _refreshAfterFirstPage = false;
     await _loadFirstPage(refresh: true);
+    _completeDeferredFirstPageRefresh();
+  }
+
+  Future<void> _refreshAfterDetailsResult() {
+    if (_firstPageRequestActive &&
+        _firstPageRequestFarmId == _selectedFarmId) {
+      _refreshAfterFirstPage = true;
+      final completer =
+          _deferredFirstPageRefresh ??= Completer<void>();
+      return completer.future;
+    }
+    return _loadFirstPage(refresh: true);
+  }
+
+  void _completeDeferredFirstPageRefresh() {
+    final completer = _deferredFirstPageRefresh;
+    _deferredFirstPageRefresh = null;
+    if (completer != null && !completer.isCompleted) completer.complete();
   }
 
   Future<void> _loadMore() async {
@@ -393,15 +419,29 @@ class _MyCropCyclesScreenState extends State<MyCropCyclesScreen> {
         !_sessionIsCurrent) {
       return;
     }
-    await _loadFirstPage(refresh: true);
+    await _refreshAfterDetailsResult();
     if (!mounted || !_sessionIsCurrent || _routeInvalidating) return;
-    final message = switch (result) {
-      CropCycleDetailsResult.updated => 'Crop cycle changes refreshed.',
-      CropCycleDetailsResult.deleted => 'Crop cycle deleted successfully.',
-      CropCycleDetailsResult.unavailable =>
-        'The unavailable crop cycle was removed from the current list.',
-      CropCycleDetailsResult.uncertain => 'The mutation outcome was not confirmed. Review the refreshed list before trying again.',
-    };
+    final refreshSucceeded = _initialError == null && _listMessage == null;
+    final message = refreshSucceeded
+        ? switch (result) {
+            CropCycleDetailsResult.updated => 'Crop cycle changes refreshed.',
+            CropCycleDetailsResult.deleted =>
+              'Crop cycle deleted successfully.',
+            CropCycleDetailsResult.unavailable =>
+              'The unavailable crop cycle was removed from the current list.',
+            CropCycleDetailsResult.uncertain =>
+              'The mutation outcome was not confirmed. Review the refreshed list before trying again.',
+          }
+        : switch (result) {
+            CropCycleDetailsResult.updated =>
+              'The crop cycle was updated, but the list refresh failed. Retry the list refresh.',
+            CropCycleDetailsResult.deleted =>
+              'Crop cycle deleted successfully, but the list refresh failed. Retry the list refresh.',
+            CropCycleDetailsResult.unavailable =>
+              'The crop cycle is unavailable, but the list refresh failed. Retry the list refresh.',
+            CropCycleDetailsResult.uncertain =>
+              'The mutation outcome was not confirmed, and the list refresh failed. Retry the list refresh before trying another mutation.',
+          };
     ScaffoldMessenger.of(context)
       ..clearSnackBars()
       ..showSnackBar(SnackBar(content: Text(message)));
