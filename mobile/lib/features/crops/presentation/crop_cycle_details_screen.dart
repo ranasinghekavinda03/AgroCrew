@@ -37,7 +37,7 @@ class _CropCycleDetailsScreenState extends State<CropCycleDetailsScreen> {
   bool _refreshing = false;
   bool _routeInvalidating = false;
   bool _deleting = false;
-  bool _uncertainDeletion = false;
+  bool _inspectionRequired = false;
   bool _returningResult = false;
   String? _mutationError;
   CropCycleDetailsResult? _pendingResult;
@@ -85,7 +85,7 @@ class _CropCycleDetailsScreenState extends State<CropCycleDetailsScreen> {
         _loading = true;
         _refreshing = false;
         _deleting = false;
-        _uncertainDeletion = false;
+        _inspectionRequired = false;
         _mutationError = null;
       });
     }
@@ -106,7 +106,10 @@ class _CropCycleDetailsScreenState extends State<CropCycleDetailsScreen> {
       _sessionIsCurrent;
 
   Future<void> _load() async {
-    if (_routeInvalidating || !_sessionIsCurrent || widget.cropCycleId <= 0) {
+    if (_routeInvalidating ||
+        _deleting ||
+        !_sessionIsCurrent ||
+        widget.cropCycleId <= 0) {
       return;
     }
     final serial = ++_requestSerial;
@@ -128,7 +131,7 @@ class _CropCycleDetailsScreenState extends State<CropCycleDetailsScreen> {
         _crop = crop;
         _loading = false;
         _refreshing = false;
-        _uncertainDeletion = false;
+        _inspectionRequired = false;
         _mutationError = null;
       });
     } on CropCycleException catch (error) {
@@ -141,7 +144,8 @@ class _CropCycleDetailsScreenState extends State<CropCycleDetailsScreen> {
       setState(() {
         if (error.type == CropCycleFailureType.notFound) {
           _crop = null;
-          _pendingResult ??= CropCycleDetailsResult.unavailable;
+          _inspectionRequired = false;
+          _pendingResult = CropCycleDetailsResult.unavailable;
         }
         _loading = false;
         _refreshing = false;
@@ -165,7 +169,7 @@ class _CropCycleDetailsScreenState extends State<CropCycleDetailsScreen> {
     final crop = _crop;
     if (crop == null ||
         _deleting ||
-        _uncertainDeletion ||
+        _inspectionRequired ||
         _routeInvalidating ||
         !_sessionIsCurrent) {
       return;
@@ -196,7 +200,12 @@ class _CropCycleDetailsScreenState extends State<CropCycleDetailsScreen> {
           const SnackBar(content: Text('Crop cycle updated successfully.')),
         );
       case EditCropCycleOutcome.uncertain:
-        setState(() => _pendingResult = CropCycleDetailsResult.uncertain);
+        setState(() {
+          _inspectionRequired = true;
+          _pendingResult = CropCycleDetailsResult.uncertain;
+          _mutationError =
+              'The update outcome could not be confirmed. Inspect authoritative details before editing or deleting this record.';
+        });
       case EditCropCycleOutcome.unavailable:
         setState(() => _pendingResult = CropCycleDetailsResult.unavailable);
     }
@@ -207,7 +216,8 @@ class _CropCycleDetailsScreenState extends State<CropCycleDetailsScreen> {
     final crop = _crop;
     if (crop == null ||
         _deleting ||
-        _uncertainDeletion ||
+        _inspectionRequired ||
+        _refreshing ||
         _routeInvalidating ||
         !_sessionIsCurrent) {
       return;
@@ -240,6 +250,7 @@ class _CropCycleDetailsScreenState extends State<CropCycleDetailsScreen> {
     if (confirmed != true ||
         !mounted ||
         _deleting ||
+        _refreshing ||
         !_sessionIsCurrent ||
         _routeInvalidating) {
       return;
@@ -248,6 +259,8 @@ class _CropCycleDetailsScreenState extends State<CropCycleDetailsScreen> {
       _deleting = true;
       _mutationError = null;
     });
+    // Any GET issued before this mutation cannot establish its outcome.
+    _requestSerial += 1;
     try {
       await widget.cropCycleService.deleteCropCycle(widget.cropCycleId);
       if (!mounted || !_sessionIsCurrent || _routeInvalidating) return;
@@ -269,7 +282,7 @@ class _CropCycleDetailsScreenState extends State<CropCycleDetailsScreen> {
           _pendingResult = CropCycleDetailsResult.unavailable;
           _mutationError = null;
         } else if (error.type == CropCycleFailureType.ambiguousDeletion) {
-          _uncertainDeletion = true;
+          _inspectionRequired = true;
           _pendingResult = CropCycleDetailsResult.uncertain;
           _mutationError = 'The deletion outcome could not be confirmed. Refresh authoritative details or return to My Crop Cycles for inspection before trying again.';
         } else {
@@ -280,7 +293,10 @@ class _CropCycleDetailsScreenState extends State<CropCycleDetailsScreen> {
       if (!mounted || !_sessionIsCurrent || _routeInvalidating) return;
       setState(() {
         _deleting = false;
-        _mutationError = 'AgroCrew could not delete the crop cycle. Try again.';
+        _inspectionRequired = true;
+        _pendingResult = CropCycleDetailsResult.uncertain;
+        _mutationError =
+            'The deletion outcome could not be confirmed. Refresh authoritative details or return to My Crop Cycles for inspection before trying again.';
       });
     }
   }
@@ -523,12 +539,12 @@ class _CropCycleDetailsScreenState extends State<CropCycleDetailsScreen> {
             ],
           ),
           const SizedBox(height: 12),
-          if (_uncertainDeletion) ...[
+          if (_inspectionRequired) ...[
             FilledButton.icon(
               key: const Key('inspect-after-delete-button'),
               onPressed: _refreshing ? null : _load,
               icon: const Icon(Icons.manage_search_outlined),
-              label: const Text('Refresh Authoritative Details'),
+              label: const Text('Retry Authoritative Details'),
             ),
             const SizedBox(height: 12),
             OutlinedButton.icon(
