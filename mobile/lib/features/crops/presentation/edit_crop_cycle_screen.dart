@@ -245,7 +245,10 @@ class _EditCropCycleScreenState extends State<EditCropCycleScreen> {
       if (!mounted || !_sessionIsCurrent || _routeInvalidating) return;
       setState(() {
         _submitting = false;
-        _submitError = 'AgroCrew could not update the crop cycle. Try again.';
+        _requiresInspection = true;
+        _inspectionOutcome = EditCropCycleOutcome.uncertain;
+        _submitError =
+            'The update outcome could not be confirmed. To avoid overwriting current data, return to Crop Cycle Details and inspect the authoritative record before trying again.';
       });
     }
   }
