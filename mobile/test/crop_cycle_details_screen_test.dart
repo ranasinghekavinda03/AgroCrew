@@ -262,6 +262,82 @@ void main() {
     expect(find.text('Crop cycle updated successfully.'), findsOneWidget);
   });
 
+  testWidgets(
+    'uncertain edit stays locked after failed inspection then verifies current record',
+    (tester) async {
+      var gets = 0;
+      var puts = 0;
+      final fixture = await _fixture((request) async {
+        if (request.method == 'PUT') {
+          puts++;
+          return http.Response('private', 500);
+        }
+        gets++;
+        if (gets == 1) return _jsonResponse(_crop(12, cropType: 'Original'));
+        if (gets == 2) return http.Response('private inspection', 500);
+        return _jsonResponse(_crop(12, cropType: 'Verified'));
+      });
+      await _pumpDetails(tester, fixture, cropCycleId: 12);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('edit-crop-cycle-button')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('save-crop-cycle-changes-button')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('inspect-crop-cycle-button')));
+      await tester.pumpAndSettle();
+
+      expect(puts, 1);
+      expect(gets, 2);
+      expect(find.byKey(const Key('edit-crop-cycle-button')), findsNothing);
+      expect(find.byKey(const Key('delete-crop-cycle-button')), findsNothing);
+      expect(find.textContaining('private'), findsNothing);
+      await tester.drag(
+        find.byKey(const Key('crop-cycle-details-content')),
+        const Offset(0, -1000),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('return-after-uncertain-delete-button')),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.byKey(const Key('inspect-after-delete-button')));
+      await tester.pumpAndSettle();
+      expect(gets, 3);
+      expect(puts, 1);
+      expect(find.text('Verified'), findsOneWidget);
+      expect(find.byKey(const Key('edit-crop-cycle-button')), findsOneWidget);
+      expect(find.byKey(const Key('delete-crop-cycle-button')), findsOneWidget);
+    },
+  );
+
+  testWidgets('uncertain edit inspection 404 becomes unavailable', (
+    tester,
+  ) async {
+    var gets = 0;
+    final fixture = await _fixture((request) async {
+      if (request.method == 'PUT') return http.Response('{}', 500);
+      gets++;
+      return gets == 1
+          ? _jsonResponse(_crop(12, cropType: 'Original'))
+          : http.Response('{}', 404);
+    });
+    await _pumpDetails(tester, fixture, cropCycleId: 12);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('edit-crop-cycle-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('save-crop-cycle-changes-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('inspect-crop-cycle-button')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('This crop cycle is unavailable.'), findsOneWidget);
+    expect(
+      find.byKey(const Key('return-to-crop-cycles-button')),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('delete confirmation Cancel dispatches zero DELETE requests', (
     tester,
   ) async {
@@ -395,6 +471,71 @@ void main() {
       expect(deletes, 1);
     });
   }
+
+  testWidgets('unexpected post-dispatch DELETE exception requires inspection', (
+    tester,
+  ) async {
+    var deletes = 0;
+    final fixture = await _fixture((request) async {
+      if (request.method == 'DELETE') {
+        deletes++;
+        throw StateError('private transport detail');
+      }
+      return _jsonResponse(_crop(18));
+    });
+    await _pumpDetails(tester, fixture, cropCycleId: 18);
+    await tester.pumpAndSettle();
+    await _confirmDelete(tester);
+
+    expect(deletes, 1);
+    expect(find.textContaining('could not be confirmed'), findsOneWidget);
+    expect(find.textContaining('private transport detail'), findsNothing);
+    expect(find.byKey(const Key('delete-crop-cycle-button')), findsNothing);
+    expect(
+      find.byKey(const Key('inspect-after-delete-button')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('pending DELETE rejects conflicting refresh dispatch', (
+    tester,
+  ) async {
+    final deletion = Completer<http.Response>();
+    var gets = 0;
+    var deletes = 0;
+    final fixture = await _fixture((request) async {
+      if (request.method == 'DELETE') {
+        deletes++;
+        return deletion.future;
+      }
+      gets++;
+      return _jsonResponse(
+        _crop(18, cropType: gets == 1 ? 'Original' : 'Verified'),
+      );
+    }, timeout: const Duration(seconds: 5));
+    await _pumpDetails(tester, fixture, cropCycleId: 18);
+    await tester.pumpAndSettle();
+    final delete = find.byKey(const Key('delete-crop-cycle-button'));
+    await tester.ensureVisible(delete);
+    await tester.tap(delete);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('delete-crop-cycle-confirm')));
+    await tester.pump();
+
+    await tester.drag(
+      find.byKey(const Key('crop-cycle-details-content')),
+      const Offset(0, 500),
+    );
+    await tester.pump();
+    expect(gets, 1);
+    expect(deletes, 1);
+    expect(find.text('Deleting...'), findsOneWidget);
+
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+    deletion.complete(http.Response('private', 500));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('account replacement during DELETE ignores old completion', (
     tester,
@@ -602,12 +743,12 @@ Future<void> _confirmDelete(WidgetTester tester) async {
   await tester.pumpAndSettle();
 }
 
-Future<_Fixture> _fixture(MockClientHandler handler) async {
+Future<_Fixture> _fixture(
+  MockClientHandler handler, {
+  Duration timeout = const Duration(milliseconds: 100),
+}) async {
   final now = DateTime.utc(2026, 11, 24, 12);
-  final client = ApiClient(
-    client: MockClient(handler),
-    timeout: const Duration(milliseconds: 100),
-  );
+  final client = ApiClient(client: MockClient(handler), timeout: timeout);
   final auth = AuthService(client, clock: () => now);
   final session = AuthSession(
     tokenStore: MemoryAuthTokenStore(),
