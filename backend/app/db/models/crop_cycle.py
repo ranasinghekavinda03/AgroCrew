@@ -7,6 +7,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 from app.db.base import Base
 
 if TYPE_CHECKING:
+    from app.db.models.crop_observation import CropObservation
     from app.db.models.farm import Farm
 
 
@@ -65,6 +66,10 @@ class CropCycle(Base):
     )
 
     farm: Mapped["Farm"] = relationship(back_populates="crop_cycles")
+    observations: Mapped[list["CropObservation"]] = relationship(
+        back_populates="crop_cycle",
+        passive_deletes="all",
+    )
 
     @validates("crop_type")
     def normalize_crop_type(self, _key: str, value: str | None) -> str | None:
